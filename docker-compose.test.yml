@@ -1,0 +1,19 @@
+services:
+  postgres-test:
+    image: postgres:15-alpine
+    container_name: otpsplash-postgres-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: otpsplash
+      POSTGRES_PASSWORD: otpsplash
+      POSTGRES_DB: otpsplash_test
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U otpsplash -d otpsplash_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

@@ -1,0 +1,59 @@
+# ─── Build Çıktıları ───────────────────────────────────────────
+dist/
+build/
+*.js.map
+*.d.ts.map
+
+# ─── Bağımlılıklar ─────────────────────────────────────────────
+node_modules/
+
+# ─── Veritabanı ────────────────────────────────────────────────
+# Migration dosyaları — sadece schema.prisma yeterli
+prisma/migrations/
+
+# ─── Test Çıktıları ────────────────────────────────────────────
+coverage/
+*.lcov
+junit.xml
+
+# ─── Log Dosyaları ─────────────────────────────────────────────
+*.log
+logs/
+
+# ─── Ortam Değişkenleri ────────────────────────────────────────
+# Gerçek env dosyaları asla context'e girmesin
+.env
+.env.local
+.env.production
+.env.staging
+# Örnek dosyalar görünür kalsın: .env.example, .env.test.example
+
+# ─── IDE / OS ──────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# ─── Docker ────────────────────────────────────────────────────
+# Runtime artifact'lar — kaynak dosyalar görünür kalsın
+.dockerignore
+
+# ─── Git ───────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ─── Gereksiz Dökümanlar ───────────────────────────────────────
+# Büyük markdown dosyaları context'i şişirir
+# CLAUDE.md hariç — o her zaman okunmalı
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+
+# ─── Geçici Dosyalar ───────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.temp
