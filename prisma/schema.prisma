@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @unique @db.VarChar(255)
+  password  String   @db.VarChar(512)
+  role      Role
+  projectId String   @db.Uuid
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([projectId])
+  @@map("users")
+}
+
+model Project {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(100)
+  apiKey    String   @unique @default(uuid()) @db.Uuid
+  users     User[]
+  otpLogs   OTPLog[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("projects")
+}
+
+model OTPLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  encryptedCode String   @db.VarChar(512) // iv:authTag:ciphertext (base64)
+  source        Source
+  projectId     String   @db.Uuid
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+
+  @@index([projectId])
+  @@index([expiresAt])
+  @@map("otp_logs")
+}
+
+enum Role {
+  RECEIVER
+  DEVELOPER
+  ADMIN
+}
+
+enum Source {
+  ANDROID
+  IOS_SHORTCUT
+}

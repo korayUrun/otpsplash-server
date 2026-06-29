@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: otpsplash-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: otpsplash
+      POSTGRES_PASSWORD: otpsplash
+      POSTGRES_DB: otpsplash
+    ports:
+      - "5432:5432"
+    volumes:
+      - otpsplash-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U otpsplash -d otpsplash"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  otpsplash-pgdata:
