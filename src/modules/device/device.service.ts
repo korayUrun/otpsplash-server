@@ -40,6 +40,8 @@ export class DeviceService implements IDeviceService {
         platform: dto.platform,
         userId: dto.userId,
         projectId: dto.projectId,
+        deviceName: dto.deviceName,
+        phoneNumber: dto.phoneNumber,
       });
 
       this.logger.info(
@@ -133,6 +135,8 @@ export class DeviceService implements IDeviceService {
     return {
       id: device.id,
       platform: device.platform,
+      deviceName: device.deviceName,
+      phoneNumber: device.phoneNumber,
       isRevoked: device.isRevoked,
       lastUsedAt: device.lastUsedAt,
       createdAt: device.createdAt,

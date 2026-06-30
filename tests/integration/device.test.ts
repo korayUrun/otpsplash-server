@@ -38,6 +38,26 @@ describe('POST /api/devices/register', () => {
     expect(stored?.secretHash.startsWith('$argon2id$')).toBe(true);
   });
 
+  it('201 — opsiyonel deviceName/phoneNumber DB`ye yazılır (FAZ 8)', async () => {
+    const { accessToken } = await getReceiverToken();
+
+    const res = await request(app)
+      .post('/api/devices/register')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({
+        platform: Platform.ANDROID,
+        deviceName: 'İş Telefonum',
+        phoneNumber: '+905551112233',
+      });
+
+    expect(res.status).toBe(201);
+    const stored = await prisma.device.findUnique({
+      where: { id: res.body.data.deviceId },
+    });
+    expect(stored?.deviceName).toBe('İş Telefonum');
+    expect(stored?.phoneNumber).toBe('+905551112233');
+  });
+
   it('403 — DEVELOPER cihaz kaydedemez', async () => {
     const { accessToken } = await getDeveloperToken();
 
@@ -138,6 +158,9 @@ describe('GET /api/devices', () => {
       expect(device).not.toHaveProperty('secretHash');
       expect(device.id).toEqual(expect.any(String));
       expect(device.platform).toEqual(expect.any(String));
+      // FAZ 8: güvenli görünüm deviceName/phoneNumber alanlarını içerir (null olabilir).
+      expect(device).toHaveProperty('deviceName');
+      expect(device).toHaveProperty('phoneNumber');
     }
   });
 });

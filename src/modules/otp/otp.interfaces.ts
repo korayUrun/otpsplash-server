@@ -6,24 +6,24 @@ import type { TargetUser } from '@modules/routing/routing.interfaces';
 // ───────────────────────── DTO'lar ─────────────────────────
 
 /**
- * `POST /api/otp` iş katmanı girişi.
- * `smsText` veya `code`'dan en az biri dolu olmalı; `projectId`/`deviceId`/`receiverId`
- * body'den değil doğrulanmış cihazdan (`req.device`) gelir — proje izolasyonu + kaynak izleme.
- *
- * `serviceId` FAZ 7'de geçici olarak body'den (opsiyonel) alınır; FAZ 8'de bu alan kalkar
- * ve `senderRaw`/`serviceHint` sinyallerinden backend'de çözümlenir (bkz. CLAUDE.md FAZ 8).
+ * `POST /api/otp` iş katmanı girişi (FAZ 8).
+ * `code` cihazda parse edilmiş 6 haneli koddur (format Zod'da doğrulanır, service tekrar etmez).
+ * `senderRaw`/`serviceHint` servis çözümleme sinyalleridir — backend `serviceId`'yi bunlardan
+ * çözer (body'de serviceId YOKTUR). `projectId`/`deviceId`/`receiverId` body'den değil
+ * doğrulanmış cihazdan (`req.device`) gelir — proje izolasyonu + kaynak izleme + sahiplik.
  */
 export interface ProcessOtpDTO {
-  smsText?: string;
-  code?: string;
+  code: string;
   source: Source;
+  /** Servis çözümlemesinin birincil sinyali (ham gönderici kimliği) — zorunlu. */
+  senderRaw: string;
+  /** Yedek sinyal (mesaj içi anahtar kelime) — opsiyonel. */
+  serviceHint?: string;
   projectId: string;
   /** OTP'yi gönderen cihaz (Device Secret ile doğrulandı) — kaynak izleme/analiz. */
   deviceId: string;
   /** Sahiplik kaynağı — doğrulanmış cihazın sahibi (`req.device.userId`), deviceId'den bağımsız. */
   receiverId: string;
-  /** Çözümlenen servis (FAZ 7 interim: body'den); yoksa kimseye gitmez. */
-  serviceId?: string;
 }
 
 /** `POST /api/otp` başarı çıktısı. */

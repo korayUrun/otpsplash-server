@@ -44,6 +44,14 @@ const envSchema = z
 
     DEVICE_SECRET_BYTES: z.coerce.number().int().positive().default(32),
 
+    // ServiceRegistry kurallarının in-memory cache ömrü (ms). Admin yeni kural eklediğinde
+    // en geç bu süre içinde devreye girer; 0 → cache devre dışı (her resolve DB'den okur).
+    SERVICE_REGISTRY_CACHE_TTL_MS: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .default(60_000),
+
     CORS_ORIGINS: z.string().default('http://localhost:3000'),
 
     RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),

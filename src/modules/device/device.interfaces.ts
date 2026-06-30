@@ -13,6 +13,10 @@ export interface RegisterDeviceDto {
   platform: Platform;
   userId: string;
   projectId: string;
+  /** Receiver beyanı (opsiyonel) — "İş Telefonum" gibi. SMS'ten türetilmez. */
+  deviceName?: string;
+  /** Receiver beyanı (opsiyonel) telefon numarası. SMS'ten türetilmez. */
+  phoneNumber?: string;
 }
 
 /**
@@ -31,15 +35,19 @@ export interface CreateDeviceData {
   platform: Platform;
   userId: string;
   projectId: string;
+  deviceName?: string;
+  phoneNumber?: string;
 }
 
 /**
  * `GET /api/devices` çıktısındaki güvenli cihaz görünümü.
- * `secretHash` asla dışarı sızdırılmaz (yalnızca DB'de kalır).
+ * `secretHash` asla dışarı sızdırılmaz (yalnızca DB'de kalır); `deviceName`/`phoneNumber` dahildir.
  */
 export interface SafeDevice {
   id: string;
   platform: Platform;
+  deviceName: string | null;
+  phoneNumber: string | null;
   isRevoked: boolean;
   lastUsedAt: Date | null;
   createdAt: Date;

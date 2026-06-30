@@ -57,6 +57,21 @@ export const CONSTANTS = {
      * indirir, bu yüzden değer lowercase tutulur (`req.headers[...]` ile eşleşsin).
      */
     SECRET_HEADER: 'x-device-secret',
+    /** Cihaz adı üst sınırı — DB şemasındaki VarChar(100) ile hizalı. */
+    NAME_MAX_LENGTH: 100,
+    /** Telefon numarası üst sınırı — DB şemasındaki VarChar(32) ile hizalı. */
+    PHONE_MAX_LENGTH: 32,
+  },
+  REGISTRY: {
+    /**
+     * senderPattern/keywordPattern üst sınırı (karakter). ReDoS koruması: kısa pattern,
+     * catastrophic backtracking yüzeyini küçültür (CLAUDE.md "senderPattern — ReDoS Koruması").
+     */
+    PATTERN_MAX_LENGTH: 200,
+    /** Servis adı üst sınırı — DB şemasındaki VarChar(100) ile hizalı. */
+    NAME_MAX_LENGTH: 100,
+    /** senderRaw/serviceHint sinyallerinin üst sınırı (DB lastSeenSender VarChar(255)). */
+    SIGNAL_MAX_LENGTH: 255,
   },
   TIME: {
     /** Bir günün milisaniye karşılığı (OTP TTL hesabı). */

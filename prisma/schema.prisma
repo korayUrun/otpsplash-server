@@ -42,17 +42,19 @@ model Project {
 }
 
 model Device {
-  id         String    @id @default(uuid()) @db.Uuid
-  secretHash String    @db.VarChar(512) // argon2id hash — plain secret asla saklanmaz
-  platform   Platform
-  userId     String    @db.Uuid
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  projectId  String    @db.Uuid
-  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  isRevoked  Boolean   @default(false)
-  lastUsedAt DateTime?
-  createdAt  DateTime  @default(now())
-  otpLogs    OTPLog[]
+  id          String    @id @default(uuid()) @db.Uuid
+  secretHash  String    @db.VarChar(512) // argon2id hash — plain secret asla saklanmaz
+  platform    Platform
+  deviceName  String?   @db.VarChar(100) // receiver kayıt sırasında girer, opsiyonel ("İş Telefonum")
+  phoneNumber String?   @db.VarChar(32) // receiver beyanı, opsiyonel — SMS'ten OTOMATİK türetilmez
+  userId      String    @db.Uuid
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String    @db.Uuid
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  isRevoked   Boolean   @default(false)
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  otpLogs     OTPLog[]
 
   @@index([userId])
   @@index([projectId])

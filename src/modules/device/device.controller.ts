@@ -22,6 +22,8 @@ export class DeviceController {
       platform: body.platform,
       userId: req.user.sub,
       projectId: req.user.projectId,
+      deviceName: body.deviceName,
+      phoneNumber: body.phoneNumber,
     });
     if (!result.success) {
       next(result.error);

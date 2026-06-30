@@ -2,28 +2,23 @@ import { z } from 'zod';
 import { Source } from '@prisma/client';
 import { CONSTANTS } from '@config/constants';
 
-/** İstek gövdesi üst sınırı (req body limiti 10kb; metin alanı için makul tavan). */
-const MAX_SMS_LENGTH = 1000;
-
 /**
- * `POST /api/otp` gövdesi.
- * `smsText` veya `code`'dan en az biri zorunlu (refine). `projectId`/`receiverId` body'de
- * YOKTUR — doğrulanmış cihazdan alınır (proje izolasyonu + sahiplik).
- *
- * `serviceId` FAZ 7'de geçici opsiyonel alandır (routing'in çalışabilmesi için). FAZ 8'de
- * kalkar ve yerini `senderRaw`/`serviceHint` alır; servis backend'de çözümlenir.
+ * `POST /api/otp` gövdesi (FAZ 8).
+ * Parse cihazda yapılır; backend ham SMS metni (`smsText`) almaz. `code` cihazda parse
+ * edilmiş 6 haneli koddur ve zorunludur; format kontrolü TEK YERDE burada (Zod) yapılır —
+ * `otp.service` artık ayrıca `validate()` çağırmaz (DRY). `senderRaw` servis çözümlemesinin
+ * birincil sinyalidir (zorunlu); `serviceHint` opsiyonel yedek sinyaldir.
+ * `projectId`/`receiverId` body'de YOKTUR — doğrulanmış cihazdan alınır (proje izolasyonu + sahiplik).
  */
-export const processOtpSchema = z
-  .object({
-    smsText: z.string().min(1).max(MAX_SMS_LENGTH).optional(),
-    code: z.string().min(1).optional(),
-    source: z.nativeEnum(Source),
-    serviceId: z.string().uuid().optional(),
-  })
-  .refine((data) => data.smsText !== undefined || data.code !== undefined, {
-    message: 'smsText veya code alanlarından en az biri zorunlu',
-    path: ['smsText'],
-  });
+export const processOtpSchema = z.object({
+  code: z
+    .string()
+    .length(CONSTANTS.OTP.CODE_LENGTH)
+    .regex(/^\d+$/, 'code yalnızca rakamlardan oluşmalı'),
+  source: z.nativeEnum(Source),
+  senderRaw: z.string().min(1).max(CONSTANTS.REGISTRY.SIGNAL_MAX_LENGTH),
+  serviceHint: z.string().min(1).max(CONSTANTS.REGISTRY.SIGNAL_MAX_LENGTH).optional(),
+});
 
 /** `PATCH /api/otp/:id/sharing` ve `GET /api/otp/:id/sharing` path parametresi. */
 export const sharingParamsSchema = z.object({

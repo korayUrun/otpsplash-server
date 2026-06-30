@@ -26,10 +26,10 @@ export class OtpController {
 
     const body = req.body as ProcessOtpBody;
     const result = await this.otpService.processAndDeliver({
-      smsText: body.smsText,
       code: body.code,
       source: body.source,
-      serviceId: body.serviceId,
+      senderRaw: body.senderRaw,
+      serviceHint: body.serviceHint,
       projectId: req.device.projectId,
       deviceId: req.device.id,
       receiverId: req.device.userId,

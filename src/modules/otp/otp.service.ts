@@ -1,21 +1,20 @@
 import { CONSTANTS } from '@config/constants';
 import { env } from '@config/env';
 import { AppError } from '@errors/AppError';
-import {
-  AuthorizationError,
-  NotFoundError,
-  OtpParseError,
-} from '@errors/errors';
+import { AuthorizationError, NotFoundError } from '@errors/errors';
 import { ErrorCode } from '@errors/ErrorCode';
 import type { ILogger } from '@infrastructure/logger';
 import { type Result, ok, fail } from '@app-types/Result';
 import type { PaginatedResult } from '@app-types/index';
 import type { IRoutingResolver } from '@modules/routing/routing.interfaces';
 import type {
+  IServiceResolver,
+  IUnmatchedRecorder,
+} from '@modules/service-registry/registry.interfaces';
+import type {
   GetHistoryDTO,
   IOtpEncryptor,
   IOtpNotifier,
-  IOtpParser,
   IOtpRepository,
   IOtpService,
   OtpHistoryItem,
@@ -27,18 +26,20 @@ import type {
 
 /**
  * OTP iş mantığı.
- * Akış: parse (SYNC) → encrypt (SYNC) → DB kaydet (AWAIT) → routing çöz (AWAIT) → emit (SYNC).
- * DB hatasında emit YAPILMAZ (kayıt → bildirim sırası garanti).
- * FAZ 7: hedef kitle artık tüm proje değil, routing resolver'ın belirlediği developer'lardır.
+ * Akış (FAZ 8): servis çözümle (AWAIT, cache'li) → encrypt (SYNC) → DB kaydet (AWAIT) →
+ * routing çöz (AWAIT) → emit (SYNC). DB hatasında emit YAPILMAZ (kayıt → bildirim sırası garanti).
+ * Parse/validate adımı YOKTUR — `code` cihazda parse edilir, format Zod'da doğrulanır (DRY).
+ * Hedef kitle routing resolver'ın belirlediği developer'lardır (FAZ 7).
  * Bağımlılıklar interface üzerinden enjekte edilir (DIP).
  */
 export class OtpService implements IOtpService {
   constructor(
-    private readonly parser: IOtpParser,
     private readonly encryptor: IOtpEncryptor,
     private readonly repository: IOtpRepository,
     private readonly notifier: IOtpNotifier,
     private readonly routingResolver: IRoutingResolver,
+    private readonly serviceResolver: IServiceResolver,
+    private readonly unmatchedRecorder: IUnmatchedRecorder,
     private readonly logger: ILogger,
   ) {}
 
@@ -46,15 +47,21 @@ export class OtpService implements IOtpService {
     dto: ProcessOtpDTO,
   ): Promise<Result<ProcessOtpResult>> {
     try {
-      const code = this.resolveCode(dto);
-      if (!code) {
-        return fail(new OtpParseError());
+      // 1) Servis çözümle (cache'li — dışarıdan her zaman await). Çözülemezse kova'ya
+      //    fire-and-forget yaz ve serviceId: null ile devam et (OTP yine kaydedilir).
+      const serviceId = await this.serviceResolver.resolve(
+        dto.projectId,
+        dto.senderRaw,
+        dto.serviceHint,
+      );
+      if (serviceId === null) {
+        this.recordUnmatchedSafely(dto.projectId, dto.senderRaw);
       }
 
-      // 1) Şifrele (SYNC) — DB'ye asla düz kod yazılmaz.
-      const encryptedCode = this.encryptor.encrypt(code);
+      // 2) Şifrele (SYNC) — DB'ye asla düz kod yazılmaz. Format Zod'da doğrulandı, tekrar etme.
+      const encryptedCode = this.encryptor.encrypt(dto.code);
 
-      // 2) Kalıcılaştır (AWAIT). receiverId sahiplik kaynağıdır (deviceId'den bağımsız).
+      // 3) Kalıcılaştır (AWAIT). receiverId sahiplik kaynağıdır (deviceId'den bağımsız).
       const expiresAt = new Date(
         Date.now() + env.OTP_TTL_DAYS * CONSTANTS.TIME.DAY_MS,
       );
@@ -64,20 +71,20 @@ export class OtpService implements IOtpService {
         projectId: dto.projectId,
         deviceId: dto.deviceId,
         receiverId: dto.receiverId,
-        serviceId: dto.serviceId,
+        serviceId: serviceId ?? undefined,
         expiresAt,
       });
 
-      // 3) Routing: hedef developer'ları çöz (AWAIT). Kural yoksa boş liste → kimseye gitmez.
+      // 4) Routing: hedef developer'ları çöz (AWAIT). Kural/servis yoksa boş liste → kimseye gitmez.
       const targetUserIds = await this.routingResolver.resolveTargets(
         dto.receiverId,
-        dto.serviceId ?? null,
+        serviceId,
       );
 
-      // 4) Yalnızca kayıt başarılıysa hedeflere anlık yayınla (SYNC).
+      // 5) Yalnızca kayıt başarılıysa hedeflere anlık yayınla (SYNC).
       const deliveredTo = this.notifier.notify(targetUserIds, {
         id: saved.id,
-        code,
+        code: dto.code,
         source: saved.source,
         createdAt: saved.createdAt,
       });
@@ -87,7 +94,7 @@ export class OtpService implements IOtpService {
           otpId: saved.id,
           projectId: dto.projectId,
           source: dto.source,
-          serviceId: dto.serviceId ?? null,
+          serviceId,
           deliveredTo,
         },
         'OTP işlendi ve iletildi',
@@ -188,19 +195,19 @@ export class OtpService implements IOtpService {
   }
 
   /**
-   * Giriş kodunu belirler: açık `code` öncelikli (doğrulanır), yoksa `smsText`'ten
-   * parse edilir. Geçerli kod yoksa `null`.
-   *
-   * @remarks FAZ 8'de parse cihaza taşınınca bu adım kalkar; FAZ 7'de hâlâ backend parse eder.
+   * Eşleşmeyen `senderRaw`'ı kova satırına fire-and-forget yazar.
+   * OTP işleme yolunu BLOKLAMAZ (response'u bekletmez); hata yalnızca loglanır,
+   * OTP'nin kendisinin kaydedilmesini/iletilmesini etkilemez.
    */
-  private resolveCode(dto: ProcessOtpDTO): string | null {
-    if (dto.code !== undefined) {
-      return this.parser.validate(dto.code) ? dto.code : null;
-    }
-    if (dto.smsText !== undefined) {
-      return this.parser.extract(dto.smsText);
-    }
-    return null;
+  private recordUnmatchedSafely(projectId: string, senderRaw: string): void {
+    void this.unmatchedRecorder
+      .recordUnmatched(projectId, senderRaw)
+      .catch((error: unknown) => {
+        this.logger.error(
+          { error, projectId },
+          'eşleşmeyen sinyal kova kaydı başarısız',
+        );
+      });
   }
 
   /**

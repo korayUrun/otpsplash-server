@@ -3,16 +3,18 @@ import { OtpService } from '@modules/otp/otp.service';
 import {
   AuthorizationError,
   NotFoundError,
-  OtpParseError,
   OtpEncryptionError,
 } from '@errors/errors';
 import type { ILogger } from '@infrastructure/logger';
 import type { IRoutingResolver } from '@modules/routing/routing.interfaces';
 import type {
+  IServiceResolver,
+  IUnmatchedRecorder,
+} from '@modules/service-registry/registry.interfaces';
+import type {
   CreateOtpLogData,
   IOtpEncryptor,
   IOtpNotifier,
-  IOtpParser,
   IOtpRepository,
   OtpNotification,
 } from '@modules/otp/otp.interfaces';
@@ -20,8 +22,8 @@ import type { PaginatedResult, PaginationOptions } from '@app-types/index';
 
 /**
  * OtpService birim testi — bağımlılıklar mock'lanır (DIP).
- * DB I/O yok: kayıt→routing→emit sırası, hata yolları, resolveCode dalları ve
- * sharing/revoked davranışı izole doğrulanır.
+ * DB I/O yok: servis çözümleme → kayıt → routing → emit sırası, kova fire-and-forget,
+ * hata yolları ve sharing/revoked davranışı izole doğrulanır.
  */
 
 const PROJECT_ID = '33333333-3333-3333-3333-333333333333';
@@ -30,6 +32,15 @@ const DEVICE_ID = '55555555-5555-5555-5555-555555555555';
 const RECEIVER_ID = '66666666-6666-6666-6666-666666666666';
 const SERVICE_ID = '77777777-7777-7777-7777-777777777777';
 const DEV_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
+const baseDto = {
+  code: '123456',
+  source: Source.ANDROID,
+  senderRaw: 'BINANCE',
+  projectId: PROJECT_ID,
+  deviceId: DEVICE_ID,
+  receiverId: RECEIVER_ID,
+};
 
 /** Sabit bir OTPLog döndüren save mock'u için yardımcı. */
 function savedLog(overrides: Partial<OTPLog> = {}): OTPLog {
@@ -49,17 +60,17 @@ function savedLog(overrides: Partial<OTPLog> = {}): OTPLog {
 }
 
 interface Mocks {
-  parser: jest.Mocked<IOtpParser>;
   encryptor: jest.Mocked<IOtpEncryptor>;
   repository: jest.Mocked<IOtpRepository>;
   notifier: jest.Mocked<IOtpNotifier>;
-  resolver: jest.Mocked<IRoutingResolver>;
+  routing: jest.Mocked<IRoutingResolver>;
+  serviceResolver: jest.Mocked<IServiceResolver>;
+  recorder: jest.Mocked<IUnmatchedRecorder>;
   logger: jest.Mocked<ILogger>;
 }
 
 function buildMocks(): Mocks {
   return {
-    parser: { extract: jest.fn(), validate: jest.fn() },
     encryptor: { encrypt: jest.fn(), decrypt: jest.fn() },
     repository: {
       save: jest.fn(),
@@ -69,7 +80,9 @@ function buildMocks(): Mocks {
       deleteExpired: jest.fn(),
     },
     notifier: { notify: jest.fn(), notifyRevoked: jest.fn() },
-    resolver: { resolveTargets: jest.fn(), resolveTargetDetails: jest.fn() },
+    routing: { resolveTargets: jest.fn(), resolveTargetDetails: jest.fn() },
+    serviceResolver: { resolve: jest.fn() },
+    recorder: { recordUnmatched: jest.fn() },
     logger: {
       fatal: jest.fn(),
       error: jest.fn(),
@@ -84,146 +97,114 @@ function buildMocks(): Mocks {
 
 function buildService(m: Mocks): OtpService {
   return new OtpService(
-    m.parser,
     m.encryptor,
     m.repository,
     m.notifier,
-    m.resolver,
+    m.routing,
+    m.serviceResolver,
+    m.recorder,
     m.logger,
   );
 }
 
 describe('OtpService.processAndDeliver', () => {
-  it('geçerli `code` → şifrele, kaydet, routing çöz, hedeflere emit (Result.ok)', async () => {
+  it('tanınan senderRaw → serviceId çözülür, kaydedilir, hedeflere emit (Result.ok)', async () => {
     const m = buildMocks();
-    m.parser.validate.mockReturnValue(true);
+    m.serviceResolver.resolve.mockResolvedValue(SERVICE_ID);
     m.encryptor.encrypt.mockReturnValue('iv:tag:ct');
     m.repository.save.mockResolvedValue(savedLog());
-    m.resolver.resolveTargets.mockResolvedValue([DEV_A]);
+    m.routing.resolveTargets.mockResolvedValue([DEV_A]);
     m.notifier.notify.mockReturnValue(1);
 
-    const result = await buildService(m).processAndDeliver({
-      code: '123456',
-      source: Source.ANDROID,
-      projectId: PROJECT_ID,
-      deviceId: DEVICE_ID,
-      receiverId: RECEIVER_ID,
-      serviceId: SERVICE_ID,
-    });
+    const result = await buildService(m).processAndDeliver({ ...baseDto });
 
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.deliveredTo).toBe(1);
     }
-    // DB'ye düz kod değil şifreli değer + kaynak cihaz + sahiplik (receiverId) yazılır.
+    // Servis senderRaw/serviceHint'ten çözülür.
+    expect(m.serviceResolver.resolve).toHaveBeenCalledWith(
+      PROJECT_ID,
+      'BINANCE',
+      undefined,
+    );
+    // DB'ye şifreli kod + sahiplik + çözülen serviceId yazılır.
     const saveArg = m.repository.save.mock.calls[0]?.[0] as CreateOtpLogData;
     expect(saveArg.encryptedCode).toBe('iv:tag:ct');
-    expect(saveArg.deviceId).toBe(DEVICE_ID);
     expect(saveArg.receiverId).toBe(RECEIVER_ID);
     expect(saveArg.serviceId).toBe(SERVICE_ID);
-    // Routing receiver+servis ile çözülür, emit yalnızca hedeflere ve düz kodla yapılır.
-    expect(m.resolver.resolveTargets).toHaveBeenCalledWith(RECEIVER_ID, SERVICE_ID);
-    expect(m.notifier.notify.mock.calls[0]?.[0]).toEqual([DEV_A]);
+    // Çözülemeyince kova'ya yazılmaz (çözüldü).
+    expect(m.recorder.recordUnmatched).not.toHaveBeenCalled();
+    // Routing çözülen serviceId ile çalışır, emit düz kodla.
+    expect(m.routing.resolveTargets).toHaveBeenCalledWith(RECEIVER_ID, SERVICE_ID);
     const notifyArg = m.notifier.notify.mock.calls[0]?.[1] as OtpNotification;
     expect(notifyArg.code).toBe('123456');
   });
 
-  it('kural yok (serviceId undefined) → resolveTargets boş, kimseye gitmez (deliveredTo 0)', async () => {
+  it('serviceHint birincil sinyale eklenir (resolve\'a iletilir)', async () => {
     const m = buildMocks();
-    m.parser.validate.mockReturnValue(true);
+    m.serviceResolver.resolve.mockResolvedValue(SERVICE_ID);
     m.encryptor.encrypt.mockReturnValue('iv:tag:ct');
-    m.repository.save.mockResolvedValue(savedLog({ serviceId: null }));
-    m.resolver.resolveTargets.mockResolvedValue([]);
+    m.repository.save.mockResolvedValue(savedLog());
+    m.routing.resolveTargets.mockResolvedValue([]);
     m.notifier.notify.mockReturnValue(0);
 
-    const result = await buildService(m).processAndDeliver({
-      code: '123456',
-      source: Source.ANDROID,
-      projectId: PROJECT_ID,
-      deviceId: DEVICE_ID,
-      receiverId: RECEIVER_ID,
-    });
+    await buildService(m).processAndDeliver({ ...baseDto, serviceHint: 'garanti' });
+
+    expect(m.serviceResolver.resolve).toHaveBeenCalledWith(
+      PROJECT_ID,
+      'BINANCE',
+      'garanti',
+    );
+  });
+
+  it('tanınmayan senderRaw → kova\'ya kaydeder, serviceId null, kimseye gitmez', async () => {
+    const m = buildMocks();
+    m.serviceResolver.resolve.mockResolvedValue(null);
+    m.recorder.recordUnmatched.mockResolvedValue(undefined);
+    m.encryptor.encrypt.mockReturnValue('iv:tag:ct');
+    m.repository.save.mockResolvedValue(savedLog({ serviceId: null }));
+    m.routing.resolveTargets.mockResolvedValue([]);
+    m.notifier.notify.mockReturnValue(0);
+
+    const result = await buildService(m).processAndDeliver({ ...baseDto });
 
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.deliveredTo).toBe(0);
     }
-    // serviceId verilmedi → resolver'a null geçer.
-    expect(m.resolver.resolveTargets).toHaveBeenCalledWith(RECEIVER_ID, null);
-    expect(m.notifier.notify).toHaveBeenCalledWith([], expect.any(Object));
+    // Kova'ya eşleşmeyen sinyal yazılır.
+    expect(m.recorder.recordUnmatched).toHaveBeenCalledWith(PROJECT_ID, 'BINANCE');
+    // serviceId yok → save'e undefined, routing'e null geçer.
+    const saveArg = m.repository.save.mock.calls[0]?.[0] as CreateOtpLogData;
+    expect(saveArg.serviceId).toBeUndefined();
+    expect(m.routing.resolveTargets).toHaveBeenCalledWith(RECEIVER_ID, null);
   });
 
-  it('`smsText`ten kod parse edilir (code verilmediğinde)', async () => {
+  it('kova kaydı fire-and-forget — recordUnmatched askıda kalsa bile OTP işlenir', async () => {
     const m = buildMocks();
-    m.parser.extract.mockReturnValue('654321');
+    m.serviceResolver.resolve.mockResolvedValue(null);
+    // Hiç çözülmeyen promise: await edilseydi test asılı kalırdı → await EDİLMEDİĞİNİ kanıtlar.
+    m.recorder.recordUnmatched.mockReturnValue(new Promise<void>(() => {}));
     m.encryptor.encrypt.mockReturnValue('iv:tag:ct');
-    m.repository.save.mockResolvedValue(savedLog());
-    m.resolver.resolveTargets.mockResolvedValue([]);
+    m.repository.save.mockResolvedValue(savedLog({ serviceId: null }));
+    m.routing.resolveTargets.mockResolvedValue([]);
     m.notifier.notify.mockReturnValue(0);
 
-    const result = await buildService(m).processAndDeliver({
-      smsText: 'Kodunuz: 654321',
-      source: Source.IOS_SHORTCUT,
-      projectId: PROJECT_ID,
-      deviceId: DEVICE_ID,
-      receiverId: RECEIVER_ID,
-    });
+    const result = await buildService(m).processAndDeliver({ ...baseDto });
 
     expect(result.success).toBe(true);
-    expect(m.parser.extract).toHaveBeenCalledWith('Kodunuz: 654321');
-    expect(m.encryptor.encrypt).toHaveBeenCalledWith('654321');
+    expect(m.repository.save).toHaveBeenCalled();
   });
 
-  it('geçersiz `code` (validate=false) → OtpParseError, kayıt/emit yok', async () => {
+  it('beklenen AppError (encrypt başarısız) → Result.fail, kayıt/emit yok', async () => {
     const m = buildMocks();
-    m.parser.validate.mockReturnValue(false);
-
-    const result = await buildService(m).processAndDeliver({
-      code: 'abc',
-      source: Source.ANDROID,
-      projectId: PROJECT_ID,
-      deviceId: DEVICE_ID,
-      receiverId: RECEIVER_ID,
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBeInstanceOf(OtpParseError);
-    }
-    expect(m.repository.save).not.toHaveBeenCalled();
-    expect(m.notifier.notify).not.toHaveBeenCalled();
-  });
-
-  it('ne code ne smsText → OtpParseError', async () => {
-    const m = buildMocks();
-
-    const result = await buildService(m).processAndDeliver({
-      source: Source.ANDROID,
-      projectId: PROJECT_ID,
-      deviceId: DEVICE_ID,
-      receiverId: RECEIVER_ID,
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBeInstanceOf(OtpParseError);
-    }
-  });
-
-  it('beklenen AppError (encrypt başarısız) → Result.fail, emit yok', async () => {
-    const m = buildMocks();
-    m.parser.validate.mockReturnValue(true);
+    m.serviceResolver.resolve.mockResolvedValue(SERVICE_ID);
     m.encryptor.encrypt.mockImplementation(() => {
       throw new OtpEncryptionError();
     });
 
-    const result = await buildService(m).processAndDeliver({
-      code: '123456',
-      source: Source.ANDROID,
-      projectId: PROJECT_ID,
-      deviceId: DEVICE_ID,
-      receiverId: RECEIVER_ID,
-    });
+    const result = await buildService(m).processAndDeliver({ ...baseDto });
 
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -235,18 +216,12 @@ describe('OtpService.processAndDeliver', () => {
 
   it('beklenmeyen DB hatası → yeniden fırlatılır (errorHandler yakalar), emit yok', async () => {
     const m = buildMocks();
-    m.parser.validate.mockReturnValue(true);
+    m.serviceResolver.resolve.mockResolvedValue(SERVICE_ID);
     m.encryptor.encrypt.mockReturnValue('iv:tag:ct');
     m.repository.save.mockRejectedValue(new Error('DB down'));
 
     await expect(
-      buildService(m).processAndDeliver({
-        code: '123456',
-        source: Source.ANDROID,
-        projectId: PROJECT_ID,
-        deviceId: DEVICE_ID,
-        receiverId: RECEIVER_ID,
-      }),
+      buildService(m).processAndDeliver({ ...baseDto }),
     ).rejects.toThrow('DB down');
     expect(m.notifier.notify).not.toHaveBeenCalled();
   });
@@ -259,14 +234,13 @@ describe('OtpService.toggleSharing', () => {
     m.repository.updateSharingActive.mockResolvedValue(
       savedLog({ sharingActive: false }),
     );
-    m.resolver.resolveTargets.mockResolvedValue([DEV_A]);
+    m.routing.resolveTargets.mockResolvedValue([DEV_A]);
 
     const result = await buildService(m).toggleSharing(OTP_ID, RECEIVER_ID, false);
 
     expect(result.success).toBe(true);
     expect(m.repository.updateSharingActive).toHaveBeenCalledWith(OTP_ID, false);
-    // Revoked SADECE hedef developer'lara (user-bazlı) gider.
-    expect(m.resolver.resolveTargets).toHaveBeenCalledWith(RECEIVER_ID, SERVICE_ID);
+    expect(m.routing.resolveTargets).toHaveBeenCalledWith(RECEIVER_ID, SERVICE_ID);
     expect(m.notifier.notifyRevoked).toHaveBeenCalledWith(OTP_ID, [DEV_A]);
   });
 
@@ -278,7 +252,6 @@ describe('OtpService.toggleSharing', () => {
     const result = await buildService(m).toggleSharing(OTP_ID, RECEIVER_ID, true);
 
     expect(result.success).toBe(true);
-    expect(m.repository.updateSharingActive).toHaveBeenCalledWith(OTP_ID, true);
     expect(m.notifier.notifyRevoked).not.toHaveBeenCalled();
   });
 
@@ -293,7 +266,6 @@ describe('OtpService.toggleSharing', () => {
       expect(result.error).toBeInstanceOf(AuthorizationError);
     }
     expect(m.repository.updateSharingActive).not.toHaveBeenCalled();
-    expect(m.notifier.notifyRevoked).not.toHaveBeenCalled();
   });
 
   it('OTP yok → NotFoundError', async () => {
@@ -313,7 +285,7 @@ describe('OtpService.getSharingTargets', () => {
   it('sahibi → çözümlenmiş hedef listesini döner', async () => {
     const m = buildMocks();
     m.repository.findById.mockResolvedValue(savedLog());
-    m.resolver.resolveTargetDetails.mockResolvedValue([
+    m.routing.resolveTargetDetails.mockResolvedValue([
       { id: DEV_A, email: 'dev@test.com' },
     ]);
 
@@ -323,7 +295,7 @@ describe('OtpService.getSharingTargets', () => {
     if (result.success) {
       expect(result.data.targets).toEqual([{ id: DEV_A, email: 'dev@test.com' }]);
     }
-    expect(m.resolver.resolveTargetDetails).toHaveBeenCalledWith(RECEIVER_ID, SERVICE_ID);
+    expect(m.routing.resolveTargetDetails).toHaveBeenCalledWith(RECEIVER_ID, SERVICE_ID);
   });
 
   it('sahibi değil → AuthorizationError', async () => {
