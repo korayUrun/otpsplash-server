@@ -13,15 +13,14 @@
 [x] FAZ 5 — Test Coverage ve Deploy       (commit edildi)
 [x] FAZ 6 — Device Authentication         (commit edildi)
 [x] FAZ 7 — Gruplar ve Yönlendirme        (commit edildi — 5f00276)
-[ ] FAZ 8 — Servis Tespiti ve Kayıt Defteri (kısmi iskelet mevcut — aşağıdaki nota bak)
+[x] FAZ 8 — Servis Tespiti ve Kayıt Defteri (commit edildi — aef3c34)
 ```
 
-> **FAZ 8 — kısmi iskelet working directory'de mevcut, henüz commit edilmedi:**
-> `prisma/schema.prisma` (Device.deviceName/phoneNumber), `constants.ts` (REGISTRY bloğu),
-> `env.ts` (SERVICE_REGISTRY_CACHE_TTL_MS), `routes/index.ts` (service-registry router),
-> `src/modules/service-registry/` (boş/başlangıç), migration:
-> `20260630182340_add_device_profile_fields`. FAZ 8'e başlarken bunları silme, üzerine inşa et.
-> `fazUpdate.md` untracked, FAZ 7/8'e ait değil, dokunma.
+> **FAZ 8 — tamamlandı ve commit edildi (aef3c34):** service-registry modülü (resolver
+> cache'i + ReDoS-korumalı şema + kova upsert), `OTPLog.serviceId` çözümlemesi, `POST /api/otp`
+> body değişimi (`smsText` kaldırıldı, `code`/`senderRaw` zorunlu, `serviceHint` opsiyonel —
+> parser/validate adımı service'ten çıktı), Device profili (`deviceName`/`phoneNumber`) ve tüm
+> unit/integration testleri. `npm run typecheck` ve `npm test` (199 test) temiz geçiyor.
 
 Yeni bir oturuma başlarken Claude Code'a şunu söyle:
 ```
