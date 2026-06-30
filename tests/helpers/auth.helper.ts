@@ -1,6 +1,6 @@
-import { Role, type Project, type User } from '@prisma/client';
+import { Role, type Device, type Project, type User } from '@prisma/client';
 import { tokenService } from '@modules/auth/token.service';
-import { createTestProject, createTestUser } from './fixtures';
+import { createTestDevice, createTestProject, createTestUser } from './fixtures';
 
 export interface AuthContext {
   project: Project;
@@ -8,6 +8,12 @@ export interface AuthContext {
   password: string;
   accessToken: string;
   refreshToken: string;
+}
+
+export interface DeviceContext extends AuthContext {
+  device: Device;
+  /** Düz Device Secret (yalnızca testte; X-Device-Secret başlığı için). */
+  deviceSecret: string;
 }
 
 /**
@@ -35,3 +41,21 @@ export const getDeveloperToken = (): Promise<AuthContext> =>
   createAuthContext(Role.DEVELOPER);
 export const getAdminToken = (): Promise<AuthContext> =>
   createAuthContext(Role.ADMIN);
+
+/**
+ * RECEIVER bağlamı + kayıtlı bir cihaz oluşturur ve düz Device Secret'ı döner.
+ * `POST /api/otp` (X-Device-Secret) testleri için kullanılır.
+ *
+ * @param opts.isRevoked true ise cihaz iptal edilmiş kaydedilir (DEVICE_REVOKED testi).
+ */
+export async function getDeviceSecret(
+  opts: { isRevoked?: boolean } = {},
+): Promise<DeviceContext> {
+  const ctx = await createAuthContext(Role.RECEIVER);
+  const { device, secret } = await createTestDevice({
+    userId: ctx.user.id,
+    projectId: ctx.project.id,
+    isRevoked: opts.isRevoked,
+  });
+  return { ...ctx, device, deviceSecret: secret };
+}

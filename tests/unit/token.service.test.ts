@@ -67,6 +67,28 @@ describe('JwtTokenService', () => {
     it('bozuk/biçimsiz token → AuthenticationError (TOKEN_INVALID)', () => {
       expectAuthError(() => service.verifyAccessToken('not.a.jwt'), ErrorCode.TOKEN_INVALID);
     });
+
+    it('eksik claim taşıyan token → AuthenticationError (TOKEN_INVALID)', () => {
+      // İmza geçerli ama role/projectId yok → payload tip kontrolü düşer.
+      const incomplete = jwt.sign(
+        { email: samplePayload.email },
+        env.JWT_ACCESS_SECRET,
+        { subject: samplePayload.sub, expiresIn: '15m' },
+      );
+      expectAuthError(
+        () => service.verifyAccessToken(incomplete),
+        ErrorCode.TOKEN_INVALID,
+      );
+    });
+
+    it('string payload ile imzalanmış token → AuthenticationError (TOKEN_INVALID)', () => {
+      // jwt.verify string döndürür → object beklenir, reddedilir.
+      const stringToken = jwt.sign('düz-metin', env.JWT_ACCESS_SECRET);
+      expectAuthError(
+        () => service.verifyAccessToken(stringToken),
+        ErrorCode.TOKEN_INVALID,
+      );
+    });
   });
 
   describe('verifyRefreshToken', () => {
@@ -78,6 +100,15 @@ describe('JwtTokenService', () => {
     it('access secret ile imzalanmış token refresh olarak geçersiz', () => {
       const access = service.generateAccessToken(samplePayload);
       expectAuthError(() => service.verifyRefreshToken(access), ErrorCode.TOKEN_INVALID);
+    });
+
+    it('sub claim taşımayan refresh token → AuthenticationError (TOKEN_INVALID)', () => {
+      // subject verilmeden imzalanır → decoded.sub undefined.
+      const noSub = jwt.sign({}, env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
+      expectAuthError(
+        () => service.verifyRefreshToken(noSub),
+        ErrorCode.TOKEN_INVALID,
+      );
     });
   });
 });

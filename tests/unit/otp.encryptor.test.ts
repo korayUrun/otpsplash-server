@@ -71,6 +71,30 @@ describe('AesGcmOtpEncryptor', () => {
       );
     });
 
+    it('IV boyutu 16 byte değilse → OtpEncryptionError', () => {
+      const encrypted = encryptor.encrypt('123456');
+      const [, authTag, ciphertext] = encrypted.split(
+        CONSTANTS.OTP.SEPARATOR,
+      ) as [string, string, string];
+      // 3 bileşen var ama IV boyutu geçersiz (8 byte).
+      const badIv = randomBytes(8).toString('base64');
+      const payload = [badIv, authTag, ciphertext].join(CONSTANTS.OTP.SEPARATOR);
+      expect(() => encryptor.decrypt(payload)).toThrow(OtpEncryptionError);
+    });
+
+    it('authTag boyutu 16 byte değilse → OtpEncryptionError', () => {
+      const encrypted = encryptor.encrypt('123456');
+      const [iv, , ciphertext] = encrypted.split(CONSTANTS.OTP.SEPARATOR) as [
+        string,
+        string,
+        string,
+      ];
+      // IV doğru boyutta ama authTag geçersiz (8 byte).
+      const badTag = randomBytes(8).toString('base64');
+      const payload = [iv, badTag, ciphertext].join(CONSTANTS.OTP.SEPARATOR);
+      expect(() => encryptor.decrypt(payload)).toThrow(OtpEncryptionError);
+    });
+
     it('yanlış anahtarla şifrelenen veri çözülemez → OtpEncryptionError', () => {
       const other = new AesGcmOtpEncryptor(randomBytes(32).toString('hex'));
       const encrypted = other.encrypt('123456');

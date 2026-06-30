@@ -42,6 +42,8 @@ const envSchema = z
       ),
     OTP_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
+    DEVICE_SECRET_BYTES: z.coerce.number().int().positive().default(32),
+
     CORS_ORIGINS: z.string().default('http://localhost:3000'),
 
     RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),

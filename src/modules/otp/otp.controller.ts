@@ -1,19 +1,21 @@
 import type { NextFunction, Request, Response } from 'express';
-import { AuthenticationError } from '@errors/errors';
+import { AuthenticationError, DeviceAuthError } from '@errors/errors';
 import type { IOtpService } from './otp.interfaces';
 import type { HistoryQuery, ProcessOtpBody } from './otp.schemas';
 
 /**
  * OTP HTTP katmanı (SRP: yalnızca request/response).
- * `projectId` body'den değil `req.user`'dan alınır → proje izolasyonu garanti.
+ * `POST /api/otp`: `projectId`/`deviceId` body'den değil doğrulanmış cihazdan
+ * (`req.device`) alınır → proje izolasyonu + kaynak izleme garanti.
+ * `GET /history`: kullanıcı oturumundan (`req.user`) — DEVELOPER dashboard'u.
  * Result açılır; hata ise `next`, değilse standart zarfla döner.
  */
 export class OtpController {
   constructor(private readonly otpService: IOtpService) {}
 
   process = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    if (!req.user) {
-      next(new AuthenticationError('Kimlik doğrulama gerekli'));
+    if (!req.device) {
+      next(new DeviceAuthError('Cihaz kimliği doğrulanamadı'));
       return;
     }
 
@@ -22,7 +24,8 @@ export class OtpController {
       smsText: body.smsText,
       code: body.code,
       source: body.source,
-      projectId: req.user.projectId,
+      projectId: req.device.projectId,
+      deviceId: req.device.id,
     });
 
     if (!result.success) {

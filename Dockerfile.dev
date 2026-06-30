@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+# ============================================================================
+# OTPsplash — Development image
+#
+# Tek aşama: tüm bağımlılıklar (dev dahil), nodemon + ts-node ile hot-reload.
+# Kaynak genelde docker-compose ile bind-mount edilir; bu imaj tek başına da çalışır.
+# ============================================================================
+FROM node:20-slim
+WORKDIR /app
+
+# Prisma query engine için libssl + sinyal yönetimi için dumb-init.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates dumb-init \
+  && rm -rf /var/lib/apt/lists/*
+
+# Bağımlılıkları cache'le (manifest değişmedikçe yeniden kurulmaz).
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Prisma client'ı üret (şema değişiminde `npm run db:generate` ile tazelenir).
+COPY prisma ./prisma
+RUN npx prisma generate
+
+# Kalan kaynak (bind-mount yoksa imaj içindeki kopya kullanılır).
+COPY . .
+
+EXPOSE 3000
+
+# nodemon (nodemon.json) → src/index.ts'i ts-node ile çalıştırır, değişiklikte yeniler.
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["npm", "run", "dev"]

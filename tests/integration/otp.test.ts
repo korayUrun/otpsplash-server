@@ -5,22 +5,29 @@ import { CONSTANTS } from '@config/constants';
 import { AesGcmOtpEncryptor } from '@modules/otp/otp.encryptor';
 import { createApp } from '../../src/app';
 import { createTestOtpLog } from '../helpers/fixtures';
-import { getDeveloperToken, getReceiverToken } from '../helpers/auth.helper';
+import {
+  getDeveloperToken,
+  getDeviceSecret,
+  getReceiverToken,
+} from '../helpers/auth.helper';
 
 const { app, io } = createApp();
 const encryptor = new AesGcmOtpEncryptor();
+
+/** Device Secret başlığı (CLAUDE.md API kontratı: X-Device-Secret). */
+const SECRET_HEADER = 'X-Device-Secret';
 
 afterAll(() => {
   io.close();
 });
 
 describe('POST /api/otp', () => {
-  it('200 — RECEIVER + smsText', async () => {
-    const { accessToken } = await getReceiverToken();
+  it('200 — geçerli X-Device-Secret + smsText', async () => {
+    const { deviceSecret } = await getDeviceSecret();
 
     const res = await request(app)
       .post('/api/otp')
-      .set('Authorization', `Bearer ${accessToken}`)
+      .set(SECRET_HEADER, deviceSecret)
       .send({ smsText: 'Kodunuz: 847291', source: Source.ANDROID });
 
     expect(res.status).toBe(200);
@@ -30,44 +37,67 @@ describe('POST /api/otp', () => {
     expect(res.body.requestId).toEqual(expect.any(String));
   });
 
-  it('200 — RECEIVER + code', async () => {
-    const { accessToken } = await getReceiverToken();
+  it('200 — geçerli X-Device-Secret + code', async () => {
+    const { deviceSecret } = await getDeviceSecret();
 
     const res = await request(app)
       .post('/api/otp')
-      .set('Authorization', `Bearer ${accessToken}`)
+      .set(SECRET_HEADER, deviceSecret)
       .send({ code: '654321', source: Source.IOS_SHORTCUT });
 
     expect(res.status).toBe(200);
     expect(res.body.data.deliveredTo).toEqual(expect.any(Number));
   });
 
-  it('403 — DEVELOPER OTP gönderemez', async () => {
-    const { accessToken } = await getDeveloperToken();
-
-    const res = await request(app)
-      .post('/api/otp')
-      .set('Authorization', `Bearer ${accessToken}`)
-      .send({ smsText: 'Kodunuz: 847291', source: Source.ANDROID });
-
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe('FORBIDDEN');
-  });
-
-  it('401 — token yok', async () => {
+  it('401 — X-Device-Secret yok (DEVICE_SECRET_INVALID)', async () => {
     const res = await request(app)
       .post('/api/otp')
       .send({ smsText: 'Kodunuz: 847291', source: Source.ANDROID });
 
     expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('DEVICE_SECRET_INVALID');
   });
 
-  it('422 — OTP içermeyen smsText (OTP_NOT_FOUND)', async () => {
+  it('401 — geçersiz X-Device-Secret (DEVICE_SECRET_INVALID)', async () => {
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, 'deadbeef'.repeat(8))
+      .send({ smsText: 'Kodunuz: 847291', source: Source.ANDROID });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('DEVICE_SECRET_INVALID');
+  });
+
+  it('401 — revoke edilmiş cihaz (DEVICE_REVOKED)', async () => {
+    const { deviceSecret } = await getDeviceSecret({ isRevoked: true });
+
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, deviceSecret)
+      .send({ smsText: 'Kodunuz: 847291', source: Source.ANDROID });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('DEVICE_REVOKED');
+  });
+
+  it('401 — Authorization: Bearer artık işe yaramaz (eski davranış kaldırıldı)', async () => {
     const { accessToken } = await getReceiverToken();
 
     const res = await request(app)
       .post('/api/otp')
       .set('Authorization', `Bearer ${accessToken}`)
+      .send({ smsText: 'Kodunuz: 847291', source: Source.ANDROID });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('DEVICE_SECRET_INVALID');
+  });
+
+  it('422 — OTP içermeyen smsText (OTP_NOT_FOUND)', async () => {
+    const { deviceSecret } = await getDeviceSecret();
+
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, deviceSecret)
       .send({ smsText: 'Bu mesajda kod yok', source: Source.ANDROID });
 
     expect(res.status).toBe(422);
@@ -75,24 +105,24 @@ describe('POST /api/otp', () => {
   });
 
   it('400 — smsText ve code ikisi de yok (VALIDATION_ERROR)', async () => {
-    const { accessToken } = await getReceiverToken();
+    const { deviceSecret } = await getDeviceSecret();
 
     const res = await request(app)
       .post('/api/otp')
-      .set('Authorization', `Bearer ${accessToken}`)
+      .set(SECRET_HEADER, deviceSecret)
       .send({ source: Source.ANDROID });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
-  it('DB`de kod şifreli saklanır (düz metin değil)', async () => {
-    const { accessToken, project } = await getReceiverToken();
+  it('DB`de kod şifreli saklanır ve doğru cihaza (deviceId) bağlanır', async () => {
+    const { deviceSecret, project, device } = await getDeviceSecret();
     const plain = '847291';
 
     await request(app)
       .post('/api/otp')
-      .set('Authorization', `Bearer ${accessToken}`)
+      .set(SECRET_HEADER, deviceSecret)
       .send({ smsText: `Kodunuz: ${plain}`, source: Source.ANDROID });
 
     const stored = await prisma.oTPLog.findFirst({
@@ -104,19 +134,17 @@ describe('POST /api/otp', () => {
     // base64(iv):base64(authTag):base64(ciphertext) → 3 bileşen, çözülünce orijinal.
     expect(stored?.encryptedCode.split(CONSTANTS.OTP.SEPARATOR)).toHaveLength(3);
     expect(encryptor.decrypt(stored!.encryptedCode)).toBe(plain);
+    // Kaynak izleme: kayıt doğru cihaza işaret eder.
+    expect(stored?.deviceId).toBe(device.id);
   });
 
   it('429 — rate limit aşılınca', async () => {
-    const { accessToken } = await getReceiverToken();
     const limit = CONSTANTS.RATE_LIMIT.OTP_MAX;
     let lastStatus = 0;
 
-    // Boş gövde → validate 422; ama her istek rate limiter'da sayılır (auth'tan önce).
+    // Boş gövde + secret yok → 401; ama her istek rate limiter'da sayılır (auth'tan önce).
     for (let i = 0; i < limit + 1; i++) {
-      const res = await request(app)
-        .post('/api/otp')
-        .set('Authorization', `Bearer ${accessToken}`)
-        .send({});
+      const res = await request(app).post('/api/otp').send({});
       lastStatus = res.status;
     }
 

@@ -6,6 +6,7 @@ import { socketNotifier } from '@infrastructure/socket';
 import { asyncHandler } from '@middleware/asyncHandler';
 import { authenticate } from '@middleware/authenticate';
 import { authorize } from '@middleware/authorize';
+import { deviceAuth } from '@middleware/deviceAuth';
 import { otpRateLimit } from '@middleware/rateLimiter';
 import { validate } from '@middleware/validate';
 import { OtpController } from './otp.controller';
@@ -25,12 +26,13 @@ const controller = new OtpController(otpService);
 
 export const otpRouter: Router = Router();
 
-// Rate limit en başta (IP bazlı, auth'tan önce). RECEIVER OTP gönderir.
+// Rate limit en başta (IP bazlı, auth'tan önce).
+// FAZ 6: JWT yerine Device Secret — `X-Device-Secret` başlığı ile doğrulanır.
+// Android BroadcastReceiver / iOS Shortcut süresiz cihaz kimliğiyle gönderir.
 otpRouter.post(
   '/',
   otpRateLimit,
-  authenticate,
-  authorize(Role.RECEIVER),
+  asyncHandler(deviceAuth),
   validate(processOtpSchema),
   asyncHandler(controller.process),
 );
