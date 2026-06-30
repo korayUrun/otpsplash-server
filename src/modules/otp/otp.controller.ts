@@ -1,13 +1,18 @@
 import type { NextFunction, Request, Response } from 'express';
 import { AuthenticationError, DeviceAuthError } from '@errors/errors';
 import type { IOtpService } from './otp.interfaces';
-import type { HistoryQuery, ProcessOtpBody } from './otp.schemas';
+import type {
+  HistoryQuery,
+  ProcessOtpBody,
+  SharingParams,
+  ToggleSharingBody,
+} from './otp.schemas';
 
 /**
  * OTP HTTP katmanı (SRP: yalnızca request/response).
- * `POST /api/otp`: `projectId`/`deviceId` body'den değil doğrulanmış cihazdan
- * (`req.device`) alınır → proje izolasyonu + kaynak izleme garanti.
- * `GET /history`: kullanıcı oturumundan (`req.user`) — DEVELOPER dashboard'u.
+ * `POST /api/otp`: `projectId`/`deviceId`/`receiverId` body'den değil doğrulanmış cihazdan
+ * (`req.device`) alınır → proje izolasyonu + kaynak izleme + sahiplik.
+ * `GET /history` ve sharing endpoint'leri kullanıcı oturumundan (`req.user`) çalışır.
  * Result açılır; hata ise `next`, değilse standart zarfla döner.
  */
 export class OtpController {
@@ -24,8 +29,10 @@ export class OtpController {
       smsText: body.smsText,
       code: body.code,
       source: body.source,
+      serviceId: body.serviceId,
       projectId: req.device.projectId,
       deviceId: req.device.id,
+      receiverId: req.device.userId,
     });
 
     if (!result.success) {
@@ -58,5 +65,42 @@ export class OtpController {
       pagination: result.data.pagination,
       requestId: req.id,
     });
+  };
+
+  toggleSharing = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!req.user) {
+      next(new AuthenticationError('Kimlik doğrulama gerekli'));
+      return;
+    }
+
+    const { id } = req.params as unknown as SharingParams;
+    const body = req.body as ToggleSharingBody;
+    const result = await this.otpService.toggleSharing(
+      id,
+      req.user.sub,
+      body.sharingActive,
+    );
+
+    if (!result.success) {
+      next(result.error);
+      return;
+    }
+    res.status(200).json({ success: true, data: result.data, requestId: req.id });
+  };
+
+  getSharing = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!req.user) {
+      next(new AuthenticationError('Kimlik doğrulama gerekli'));
+      return;
+    }
+
+    const { id } = req.params as unknown as SharingParams;
+    const result = await this.otpService.getSharingTargets(id, req.user.sub);
+
+    if (!result.success) {
+      next(result.error);
+      return;
+    }
+    res.status(200).json({ success: true, data: result.data, requestId: req.id });
   };
 }

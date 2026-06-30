@@ -13,15 +13,24 @@ export class PrismaOtpRepository implements IOtpRepository {
     return this.prisma.oTPLog.create({ data });
   }
 
+  async findById(id: string): Promise<OTPLog | null> {
+    return this.prisma.oTPLog.findUnique({ where: { id } });
+  }
+
   /**
-   * Projeye ait, süresi DOLMAMIŞ kayıtları sayfalı döner (en yeni önce).
+   * Projeye ait, süresi DOLMAMIŞ ve paylaşımı AÇIK kayıtları sayfalı döner (en yeni önce).
+   * `sharingActive: false` (receiver durdurmuş) kayıtlar history'den düşer (FAZ 7).
    * Toplam sayım ve veri çekme tek round-trip'te paralel (Promise.all).
    */
   async findByProject(
     projectId: string,
     options: PaginationOptions,
   ): Promise<PaginatedResult<OTPLog>> {
-    const where = { projectId, expiresAt: { gt: new Date() } };
+    const where = {
+      projectId,
+      sharingActive: true,
+      expiresAt: { gt: new Date() },
+    };
     const skip = (options.page - 1) * options.limit;
 
     const [items, total] = await Promise.all([
@@ -43,6 +52,13 @@ export class PrismaOtpRepository implements IOtpRepository {
         totalPages: Math.ceil(total / options.limit),
       },
     };
+  }
+
+  async updateSharingActive(otpId: string, isActive: boolean): Promise<OTPLog> {
+    return this.prisma.oTPLog.update({
+      where: { id: otpId },
+      data: { sharingActive: isActive },
+    });
   }
 
   async deleteExpired(): Promise<number> {

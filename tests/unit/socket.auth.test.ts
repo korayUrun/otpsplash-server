@@ -93,11 +93,11 @@ describe('handleConnection', () => {
     return { socket, join };
   }
 
-  it('DEVELOPER → proje odasına katılır', () => {
+  it('DEVELOPER → kullanıcı odasına katılır (FAZ 7 hedefli dağıtım)', () => {
     const { socket, join } = fakeConnSocket(samplePayload);
     handleConnection(socket);
     expect(join).toHaveBeenCalledWith(
-      CONSTANTS.SOCKET.projectRoom(samplePayload.projectId),
+      CONSTANTS.SOCKET.userRoom(samplePayload.sub),
     );
   });
 

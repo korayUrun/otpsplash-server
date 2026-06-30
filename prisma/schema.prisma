@@ -8,15 +8,18 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid()) @db.Uuid
-  email     String   @unique @db.VarChar(255)
-  password  String   @db.VarChar(512)
-  role      Role
-  projectId String   @db.Uuid
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  devices   Device[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String        @id @default(uuid()) @db.Uuid
+  email        String        @unique @db.VarChar(255)
+  password     String        @db.VarChar(512)
+  role         Role
+  projectId    String        @db.Uuid
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  devices      Device[]
+  groupMembers GroupMember[]
+  routingRules RoutingRule[] @relation("ReceiverRules")
+  receivedOtps OTPLog[]      @relation("ReceiverOtps") // sahiplik kanıtı — deviceId'den bağımsız
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 
   @@index([email])
   @@index([projectId])
@@ -24,14 +27,16 @@ model User {
 }
 
 model Project {
-  id        String   @id @default(uuid()) @db.Uuid
-  name      String   @db.VarChar(100)
-  apiKey    String   @unique @default(uuid()) @db.Uuid
+  id        String            @id @default(uuid()) @db.Uuid
+  name      String            @db.VarChar(100)
+  apiKey    String            @unique @default(uuid()) @db.Uuid
   users     User[]
   otpLogs   OTPLog[]
   devices   Device[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  groups    Group[]
+  services  ServiceRegistry[]
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
 
   @@map("projects")
 }
@@ -54,20 +59,113 @@ model Device {
   @@map("devices")
 }
 
+model Group {
+  id           String        @id @default(uuid()) @db.Uuid
+  name         String        @db.VarChar(100) // admin tarafından konur, receiver'a görünür
+  projectId    String        @db.Uuid
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  members      GroupMember[]
+  routingRules RoutingRule[] @relation("GroupRules")
+  createdAt    DateTime      @default(now())
+
+  @@index([projectId])
+  @@map("groups")
+}
+
+model GroupMember {
+  id        String   @id @default(uuid()) @db.Uuid
+  groupId   String   @db.Uuid
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId    String   @db.Uuid // DEVELOPER rolünde bir User
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([groupId, userId])
+  @@index([userId])
+  @@map("group_members")
+}
+
+// Servis Kayıt Defteri — hem aktif kuralları hem "henüz adlandırılmamış" (kova) satırları tutar.
+// FAZ 7'de tablo olarak oluşturulur (RoutingRule.serviceId ve OTPLog.serviceId buna bağlanır);
+// kova mantığı + resolver + admin modülü FAZ 8'de eklenir.
+model ServiceRegistry {
+  id             String        @id @default(uuid()) @db.Uuid
+  name           String?       @db.VarChar(100) // null = henüz adlandırılmadı (kova durumu)
+  isActive       Boolean       @default(false) // false = kova, true = kural olarak çalışıyor
+  senderPattern  String?       @db.VarChar(255) // senderRaw eşleştirme deseni (regex veya exact)
+  keywordPattern String?       @db.VarChar(255) // serviceHint eşleştirme deseni (yedek sinyal)
+  iconUrl        String?       @db.VarChar(500)
+  projectId      String        @db.Uuid
+  project        Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  lastSeenSender String?       @db.VarChar(255) // kova durumundayken en son görülen ham gönderici
+  unmatchedCount Int           @default(0) // kova durumundayken kaç kez görüldü
+  lastSeenAt     DateTime?
+  routingRules   RoutingRule[]
+  otpLogs        OTPLog[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([projectId])
+  @@index([isActive])
+  @@map("service_registry")
+}
+
+// Hangi receiver'ın hangi servisten gelen kodu kime (developer veya grup) gidecek.
+model RoutingRule {
+  id          String          @id @default(uuid()) @db.Uuid
+  receiverId  String          @db.Uuid
+  receiver    User            @relation("ReceiverRules", fields: [receiverId], references: [id], onDelete: Cascade)
+  serviceId   String          @db.Uuid
+  service     ServiceRegistry @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  targetType  RoutingTarget // DEVELOPER | GROUP
+  developerId String?         @db.Uuid // targetType=DEVELOPER ise dolu
+  groupId     String?         @db.Uuid // targetType=GROUP ise dolu
+  group       Group?          @relation("GroupRules", fields: [groupId], references: [id], onDelete: Cascade)
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([receiverId])
+  @@index([serviceId])
+  @@map("routing_rules")
+}
+
+// NOT: PostgreSQL'de düz @@unique([...]) NULL'ları "farklı" sayar — targetType=DEVELOPER
+// kayıtlarında groupId hep NULL olduğundan aynı (receiver, servis, developer) tekrar
+// eklenebilirdi. Bu yüzden migration'da @@unique yerine İKİ AYRI partial unique index
+// raw SQL ile eklenir (migration dosyasına elle eklendi). schema.prisma'da ifade edilemez:
+//
+//   CREATE UNIQUE INDEX routing_rule_developer_unique
+//     ON routing_rules (receiver_id, service_id, developer_id)
+//     WHERE target_type = 'DEVELOPER';
+//   CREATE UNIQUE INDEX routing_rule_group_unique
+//     ON routing_rules (receiver_id, service_id, group_id)
+//     WHERE target_type = 'GROUP';
+//
+// Bu DB seviyesi koruma, routing.service.ts'teki createRule'da yapılan açık "zaten var mı"
+// kontrolünün YERİNE değil, ONUN YANINDA çalışır — çift katmanlı korunur.
+
 model OTPLog {
-  id            String   @id @default(uuid()) @db.Uuid
-  encryptedCode String   @db.VarChar(512) // iv:authTag:ciphertext (base64)
+  id            String           @id @default(uuid()) @db.Uuid
+  encryptedCode String           @db.VarChar(512) // iv:authTag:ciphertext (base64)
   source        Source
-  projectId     String   @db.Uuid
-  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  deviceId      String?  @db.Uuid // hangi cihazdan geldi — izleme/analiz için
-  device        Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
-  createdAt     DateTime @default(now())
+  projectId     String           @db.Uuid
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deviceId      String?          @db.Uuid // izleme/analiz amaçlı — onDelete: SetNull
+  device        Device?          @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  receiverId    String           @db.Uuid // SAHİPLİK KAYNAĞI — deviceId silinse bile kalıcı
+  receiver      User             @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
+  serviceId     String?          @db.Uuid // çözümlenen servis — null ise hiç çözülemedi
+  service       ServiceRegistry? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  sharingActive Boolean          @default(true) // receiver bu OTP'nin paylaşımını durdurabilir
+  createdAt     DateTime         @default(now())
   expiresAt     DateTime
 
   @@index([projectId])
   @@index([expiresAt])
   @@index([deviceId])
+  @@index([receiverId])
+  @@index([serviceId])
   @@map("otp_logs")
 }
 
@@ -85,4 +183,9 @@ enum Source {
 enum Platform {
   ANDROID
   IOS
+}
+
+enum RoutingTarget {
+  DEVELOPER
+  GROUP
 }

@@ -1,15 +1,53 @@
 import request from 'supertest';
-import { Source } from '@prisma/client';
+import { Role, RoutingTarget, Source } from '@prisma/client';
 import { prisma } from '@config/prisma';
 import { CONSTANTS } from '@config/constants';
 import { AesGcmOtpEncryptor } from '@modules/otp/otp.encryptor';
+import { tokenService } from '@modules/auth/token.service';
 import { createApp } from '../../src/app';
-import { createTestOtpLog } from '../helpers/fixtures';
+import {
+  createTestOtpLog,
+  createTestProject,
+  createTestRoutingRule,
+  createTestService,
+  createTestUser,
+} from '../helpers/fixtures';
 import {
   getDeveloperToken,
   getDeviceSecret,
   getReceiverToken,
 } from '../helpers/auth.helper';
+
+const SECRET_HEADER_NAME = 'X-Device-Secret';
+
+/** Aynı projede receiver + developer (token'lı) kurar — sharing/history senaryoları için. */
+async function projectWithReceiverAndDeveloper(): Promise<{
+  projectId: string;
+  receiver: { id: string; token: string };
+  developer: { id: string; token: string };
+}> {
+  const project = await createTestProject();
+  const { user: receiver } = await createTestUser({
+    projectId: project.id,
+    role: Role.RECEIVER,
+  });
+  const { user: developer } = await createTestUser({
+    projectId: project.id,
+    role: Role.DEVELOPER,
+  });
+  const sign = (u: typeof receiver): string =>
+    tokenService.generateAccessToken({
+      sub: u.id,
+      email: u.email,
+      role: u.role,
+      projectId: u.projectId,
+    });
+  return {
+    projectId: project.id,
+    receiver: { id: receiver.id, token: sign(receiver) },
+    developer: { id: developer.id, token: sign(developer) },
+  };
+}
 
 const { app, io } = createApp();
 const encryptor = new AesGcmOtpEncryptor();
@@ -216,5 +254,231 @@ describe('GET /api/otp/history', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(0);
+  });
+});
+
+describe('POST /api/otp — routing dağıtımı (FAZ 7)', () => {
+  it('kuralı olan receiver+servis → hedef developer\'a iletilir (deliveredTo=1)', async () => {
+    const ctx = await getDeviceSecret();
+    const { user: developer } = await createTestUser({
+      projectId: ctx.project.id,
+      role: Role.DEVELOPER,
+    });
+    const service = await createTestService({ projectId: ctx.project.id });
+    await createTestRoutingRule({
+      receiverId: ctx.user.id,
+      serviceId: service.id,
+      targetType: RoutingTarget.DEVELOPER,
+      developerId: developer.id,
+    });
+
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER_NAME, ctx.deviceSecret)
+      .send({ code: '123456', source: Source.ANDROID, serviceId: service.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.deliveredTo).toBe(1);
+
+    const stored = await prisma.oTPLog.findFirst({
+      where: { receiverId: ctx.user.id },
+    });
+    expect(stored?.serviceId).toBe(service.id);
+    expect(stored?.receiverId).toBe(ctx.user.id);
+  });
+
+  it('hedeflenmeyen developer bildirim almaz — deliveredTo yalnızca kuraldaki hedefi sayar', async () => {
+    const ctx = await getDeviceSecret();
+    const { user: targeted } = await createTestUser({
+      projectId: ctx.project.id,
+      role: Role.DEVELOPER,
+    });
+    // Aynı projede kurala dahil OLMAYAN ikinci developer — bildirim almamalı.
+    await createTestUser({ projectId: ctx.project.id, role: Role.DEVELOPER });
+    const service = await createTestService({ projectId: ctx.project.id });
+    await createTestRoutingRule({
+      receiverId: ctx.user.id,
+      serviceId: service.id,
+      targetType: RoutingTarget.DEVELOPER,
+      developerId: targeted.id,
+    });
+
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER_NAME, ctx.deviceSecret)
+      .send({ code: '123456', source: Source.ANDROID, serviceId: service.id });
+
+    expect(res.status).toBe(200);
+    // Projede 2 developer olmasına rağmen yalnızca kuraldaki tek hedefe iletilir.
+    expect(res.body.data.deliveredTo).toBe(1);
+  });
+
+  it('kuralı olmayan receiver+servis → kimseye gitmez (deliveredTo=0), serviceId null', async () => {
+    const ctx = await getDeviceSecret();
+
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER_NAME, ctx.deviceSecret)
+      .send({ code: '123456', source: Source.ANDROID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.deliveredTo).toBe(0);
+
+    const stored = await prisma.oTPLog.findFirst({
+      where: { receiverId: ctx.user.id },
+    });
+    expect(stored).not.toBeNull();
+    expect(stored?.serviceId).toBeNull();
+  });
+
+  it('pasif kural → iletilmez (deliveredTo=0), DB kaydı yine de oluşur', async () => {
+    const ctx = await getDeviceSecret();
+    const { user: developer } = await createTestUser({
+      projectId: ctx.project.id,
+      role: Role.DEVELOPER,
+    });
+    const service = await createTestService({ projectId: ctx.project.id });
+    await createTestRoutingRule({
+      receiverId: ctx.user.id,
+      serviceId: service.id,
+      targetType: RoutingTarget.DEVELOPER,
+      developerId: developer.id,
+      isActive: false,
+    });
+
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER_NAME, ctx.deviceSecret)
+      .send({ code: '123456', source: Source.ANDROID, serviceId: service.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.deliveredTo).toBe(0);
+    const stored = await prisma.oTPLog.findFirst({
+      where: { receiverId: ctx.user.id },
+    });
+    expect(stored).not.toBeNull();
+  });
+});
+
+describe('PATCH /api/otp/:id/sharing', () => {
+  it('200 — sahibi paylaşımı durdurabilir', async () => {
+    const ctx = await getReceiverToken();
+    const { otpLog } = await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+    });
+
+    const res = await request(app)
+      .patch(`/api/otp/${otpLog.id}/sharing`)
+      .set('Authorization', `Bearer ${ctx.accessToken}`)
+      .send({ sharingActive: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.sharingActive).toBe(false);
+    const stored = await prisma.oTPLog.findUnique({ where: { id: otpLog.id } });
+    expect(stored?.sharingActive).toBe(false);
+  });
+
+  it('403 — başka receiver\'ın OTP\'sinde toggle denemesi', async () => {
+    const owner = await getReceiverToken();
+    const intruder = await getReceiverToken();
+    const { otpLog } = await createTestOtpLog({
+      projectId: owner.project.id,
+      receiverId: owner.user.id,
+    });
+
+    const res = await request(app)
+      .patch(`/api/otp/${otpLog.id}/sharing`)
+      .set('Authorization', `Bearer ${intruder.accessToken}`)
+      .send({ sharingActive: false });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('sharingActive=false → history\'de görünmez', async () => {
+    const { projectId, receiver, developer } = await projectWithReceiverAndDeveloper();
+    const { otpLog } = await createTestOtpLog({ projectId, receiverId: receiver.id });
+
+    const before = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${developer.token}`);
+    expect(before.body.data).toHaveLength(1);
+
+    await request(app)
+      .patch(`/api/otp/${otpLog.id}/sharing`)
+      .set('Authorization', `Bearer ${receiver.token}`)
+      .send({ sharingActive: false });
+
+    const after = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${developer.token}`);
+    expect(after.body.data).toHaveLength(0);
+  });
+
+  it('device silinmiş receiver bile eski OTP\'sinin paylaşımını durdurabilir', async () => {
+    const ctx = await getDeviceSecret();
+    const { otpLog } = await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+      deviceId: ctx.device.id,
+    });
+    // Cihaz silinir → OTPLog.deviceId SetNull olur ama receiverId kalır.
+    await prisma.device.delete({ where: { id: ctx.device.id } });
+
+    const res = await request(app)
+      .patch(`/api/otp/${otpLog.id}/sharing`)
+      .set('Authorization', `Bearer ${ctx.accessToken}`)
+      .send({ sharingActive: false });
+
+    expect(res.status).toBe(200);
+    const stored = await prisma.oTPLog.findUnique({ where: { id: otpLog.id } });
+    expect(stored?.deviceId).toBeNull();
+    expect(stored?.sharingActive).toBe(false);
+  });
+});
+
+describe('GET /api/otp/:id/sharing', () => {
+  it('200 — sahibi OTP\'nin kimlerle paylaşıldığını salt-okunur görür', async () => {
+    const ctx = await getDeviceSecret();
+    const { user: developer } = await createTestUser({
+      projectId: ctx.project.id,
+      role: Role.DEVELOPER,
+    });
+    const service = await createTestService({ projectId: ctx.project.id });
+    await createTestRoutingRule({
+      receiverId: ctx.user.id,
+      serviceId: service.id,
+      targetType: RoutingTarget.DEVELOPER,
+      developerId: developer.id,
+    });
+    const { otpLog } = await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+      serviceId: service.id,
+    });
+
+    const res = await request(app)
+      .get(`/api/otp/${otpLog.id}/sharing`)
+      .set('Authorization', `Bearer ${ctx.accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.targets).toHaveLength(1);
+    expect(res.body.data.targets[0].id).toBe(developer.id);
+  });
+
+  it('403 — başka receiver\'ın OTP paylaşım hedefi görülemez', async () => {
+    const owner = await getReceiverToken();
+    const intruder = await getReceiverToken();
+    const { otpLog } = await createTestOtpLog({
+      projectId: owner.project.id,
+      receiverId: owner.user.id,
+    });
+
+    const res = await request(app)
+      .get(`/api/otp/${otpLog.id}/sharing`)
+      .set('Authorization', `Bearer ${intruder.accessToken}`);
+
+    expect(res.status).toBe(403);
   });
 });

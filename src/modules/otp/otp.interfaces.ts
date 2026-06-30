@@ -1,13 +1,17 @@
 import type { OTPLog, Source } from '@prisma/client';
 import type { Result } from '@app-types/Result';
 import type { PaginatedResult, PaginationOptions } from '@app-types/index';
+import type { TargetUser } from '@modules/routing/routing.interfaces';
 
 // ───────────────────────── DTO'lar ─────────────────────────
 
 /**
  * `POST /api/otp` iş katmanı girişi.
- * `smsText` veya `code`'dan en az biri dolu olmalı; `projectId`/`deviceId` body'den
- * değil doğrulanmış cihazdan (`req.device`) gelir — proje izolasyonu + kaynak izleme.
+ * `smsText` veya `code`'dan en az biri dolu olmalı; `projectId`/`deviceId`/`receiverId`
+ * body'den değil doğrulanmış cihazdan (`req.device`) gelir — proje izolasyonu + kaynak izleme.
+ *
+ * `serviceId` FAZ 7'de geçici olarak body'den (opsiyonel) alınır; FAZ 8'de bu alan kalkar
+ * ve `senderRaw`/`serviceHint` sinyallerinden backend'de çözümlenir (bkz. CLAUDE.md FAZ 8).
  */
 export interface ProcessOtpDTO {
   smsText?: string;
@@ -16,12 +20,16 @@ export interface ProcessOtpDTO {
   projectId: string;
   /** OTP'yi gönderen cihaz (Device Secret ile doğrulandı) — kaynak izleme/analiz. */
   deviceId: string;
+  /** Sahiplik kaynağı — doğrulanmış cihazın sahibi (`req.device.userId`), deviceId'den bağımsız. */
+  receiverId: string;
+  /** Çözümlenen servis (FAZ 7 interim: body'den); yoksa kimseye gitmez. */
+  serviceId?: string;
 }
 
 /** `POST /api/otp` başarı çıktısı. */
 export interface ProcessOtpResult {
   message: string;
-  /** O an proje odasında bulunan (OTP'yi anlık alan) bağlı developer sayısı. */
+  /** Routing kuralına göre OTP'nin iletildiği hedef developer sayısı. */
   deliveredTo: number;
 }
 
@@ -39,6 +47,16 @@ export interface OtpHistoryItem {
   expiresAt: Date;
 }
 
+/** `PATCH /api/otp/:id/sharing` çıktısı. */
+export interface ToggleSharingResult {
+  sharingActive: boolean;
+}
+
+/** `GET /api/otp/:id/sharing` çıktısı — bu OTP şu an kimlerle paylaşılıyor (salt-okunur). */
+export interface SharingTargetsResult {
+  targets: TargetUser[];
+}
+
 /** Repository'ye kaydetmek için gereken alanlar (id/createdAt DB tarafından üretilir). */
 export interface CreateOtpLogData {
   encryptedCode: string;
@@ -46,6 +64,10 @@ export interface CreateOtpLogData {
   projectId: string;
   /** Kaydı oluşturan cihaz; ilişki SetNull olduğundan opsiyonel tutulur. */
   deviceId?: string;
+  /** Sahiplik kaynağı — deviceId null'a düşse bile kalıcı. */
+  receiverId: string;
+  /** Çözümlenen servis; çözülemezse null. */
+  serviceId?: string;
   expiresAt: Date;
 }
 
@@ -55,6 +77,11 @@ export interface OtpNotification {
   code: string;
   source: Source;
   createdAt: Date;
+}
+
+/** `otp:revoked` event yükü — developer UI'ının ilgili kartı kaldırması için sinyal. */
+export interface OtpRevokedNotification {
+  otpId: string;
 }
 
 // ───────────────────────── Servis arayüzleri (port'lar) ─────────────────────────
@@ -88,11 +115,18 @@ export interface IOtpEncryptor {
 export interface IOtpRepository {
   /** Yeni OTP kaydı oluşturur. */
   save(data: CreateOtpLogData): Promise<OTPLog>;
-  /** Projeye ait, süresi dolmamış kayıtları sayfalı döner (createdAt desc). */
+  /** OTP'yi id ile getirir (sahiplik/servis kontrolü için); yoksa `null`. */
+  findById(id: string): Promise<OTPLog | null>;
+  /**
+   * Projeye ait, süresi dolmamış ve paylaşımı AÇIK kayıtları sayfalı döner (createdAt desc).
+   * `sharingActive: false` olanlar history'de görünmez (FAZ 7).
+   */
   findByProject(
     projectId: string,
     options: PaginationOptions,
   ): Promise<PaginatedResult<OTPLog>>;
+  /** Paylaşım durumunu günceller (sahiplik service'te receiverId ile doğrulanır). */
+  updateSharingActive(otpId: string, isActive: boolean): Promise<OTPLog>;
   /** Süresi geçmiş tüm kayıtları siler; silinen kayıt sayısını döner. */
   deleteExpired(): Promise<number>;
 }
@@ -102,10 +136,15 @@ export interface IOtpRepository {
  */
 export interface IOtpNotifier {
   /**
-   * OTP'yi projenin odasına yayınlar.
-   * @returns O an odada bulunan alıcı sayısı (best-effort).
+   * OTP'yi hedef developer'ların bireysel `user:` odalarına yayınlar (FAZ 7 hedefli dağıtım).
+   * @returns Emit edilen hedef developer sayısı ("deliveredTo").
    */
-  notify(projectId: string, payload: OtpNotification): number;
+  notify(targetUserIds: string[], payload: OtpNotification): number;
+  /**
+   * Paylaşımı durdurulan OTP için `otp:revoked` event'ini hedef developer'lara yayınlar.
+   * `notify` ile aynı (user-bazlı) hedeflemeyi kullanır — çift emit önlenir.
+   */
+  notifyRevoked(otpId: string, targetUserIds: string[]): void;
 }
 
 /**
@@ -114,4 +153,18 @@ export interface IOtpNotifier {
 export interface IOtpService {
   processAndDeliver(dto: ProcessOtpDTO): Promise<Result<ProcessOtpResult>>;
   getHistory(dto: GetHistoryDTO): Promise<Result<PaginatedResult<OtpHistoryItem>>>;
+  /**
+   * OTP paylaşımını aç/kapat. Sahiplik `OTPLog.receiverId` üzerinden doğrulanır
+   * (deviceId null olsa bile çalışır). Kapatıldığında hedef developer'lara `otp:revoked` gider.
+   */
+  toggleSharing(
+    otpId: string,
+    receiverId: string,
+    isActive: boolean,
+  ): Promise<Result<ToggleSharingResult>>;
+  /** Bu OTP'nin şu an kimlerle paylaşıldığını salt-okunur döner (sahibi görebilir). */
+  getSharingTargets(
+    otpId: string,
+    receiverId: string,
+  ): Promise<Result<SharingTargetsResult>>;
 }

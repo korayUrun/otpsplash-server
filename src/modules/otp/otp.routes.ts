@@ -9,19 +9,32 @@ import { authorize } from '@middleware/authorize';
 import { deviceAuth } from '@middleware/deviceAuth';
 import { otpRateLimit } from '@middleware/rateLimiter';
 import { validate } from '@middleware/validate';
+import { routingResolver } from '@modules/routing/routing.routes';
 import { OtpController } from './otp.controller';
 import { AesGcmOtpEncryptor } from './otp.encryptor';
 import { OtpParser } from './otp.parser';
 import { PrismaOtpRepository } from './otp.repository';
 import { OtpService } from './otp.service';
-import { historyQuerySchema, processOtpSchema } from './otp.schemas';
+import {
+  historyQuerySchema,
+  processOtpSchema,
+  sharingParamsSchema,
+  toggleSharingSchema,
+} from './otp.schemas';
 
 // ── Modül kompozisyon kökü ──
 // Concrete bağımlılıklar burada kurulur; service interface'lere bağlıdır (DIP).
 const parser = new OtpParser();
 const encryptor = new AesGcmOtpEncryptor();
 const repository = new PrismaOtpRepository(prisma);
-const otpService = new OtpService(parser, encryptor, repository, socketNotifier, logger);
+const otpService = new OtpService(
+  parser,
+  encryptor,
+  repository,
+  socketNotifier,
+  routingResolver,
+  logger,
+);
 const controller = new OtpController(otpService);
 
 export const otpRouter: Router = Router();
@@ -44,4 +57,23 @@ otpRouter.get(
   authorize(Role.DEVELOPER),
   validate(historyQuerySchema, 'query'),
   asyncHandler(controller.history),
+);
+
+// Bir OTP'nin kimlerle paylaşıldığı (salt-okunur) — yalnızca OTP'nin sahibi RECEIVER.
+otpRouter.get(
+  '/:id/sharing',
+  authenticate,
+  authorize(Role.RECEIVER),
+  validate(sharingParamsSchema, 'params'),
+  asyncHandler(controller.getSharing),
+);
+
+// OTP paylaşımını aç/kapat — yalnızca OTP'nin sahibi RECEIVER (sahiplik service'te receiverId ile).
+otpRouter.patch(
+  '/:id/sharing',
+  authenticate,
+  authorize(Role.RECEIVER),
+  validate(sharingParamsSchema, 'params'),
+  validate(toggleSharingSchema),
+  asyncHandler(controller.toggleSharing),
 );

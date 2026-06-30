@@ -62,13 +62,18 @@ export class NotFoundError extends AppError {
 
 /**
  * 409 — Kaynak çakışması (örn. e-posta zaten kayıtlı).
+ * `errorCode` override edilebilir: CONFLICT (varsayılan), ROUTING_RULE_CONFLICT.
  */
 export class ConflictError extends AppError {
   readonly statusCode = 409;
-  readonly errorCode = ErrorCode.CONFLICT;
+  readonly errorCode: ErrorCode;
 
-  constructor(message = 'Kaynak zaten mevcut') {
+  constructor(
+    message = 'Kaynak zaten mevcut',
+    errorCode: ErrorCode = ErrorCode.CONFLICT,
+  ) {
     super(message, true);
+    this.errorCode = errorCode;
   }
 }
 

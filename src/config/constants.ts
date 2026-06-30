@@ -24,10 +24,20 @@ export const CONSTANTS = {
     PARALLELISM: 4,
   },
   SOCKET: {
-    /** Proje bazlı oda adı üretici. */
+    /**
+     * Kullanıcı bazlı oda adı üretici (FAZ 7 hedefli dağıtım).
+     * Hedefli OTP/revoked event'leri SADECE bu odalara gider — çift emit önlenir.
+     */
+    userRoom: (userId: string): string => `user:${userId}`,
+    /**
+     * Proje bazlı oda adı üretici. FAZ 7 sonrası OTP/revoked için KULLANILMAZ;
+     * ileride proje-geneli duyurular gibi farklı bir amaç için saklı tutulur.
+     */
     projectRoom: (projectId: string): string => `project:${projectId}`,
-    /** Yeni OTP iletildiğinde yayınlanan event adı. */
-    EVENT_OTP: 'otp',
+    /** Yeni OTP iletildiğinde hedef developer'lara yayınlanan event adı. */
+    EVENT_OTP: 'otp:received',
+    /** Paylaşımı durdurulan OTP için developer ekranına gönderilen event adı. */
+    EVENT_OTP_REVOKED: 'otp:revoked',
   },
   PAGINATION: {
     DEFAULT_PAGE: 1,
