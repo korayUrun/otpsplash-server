@@ -52,6 +52,7 @@ export class OtpService implements IOtpService {
         encryptedCode,
         source: dto.source,
         projectId: dto.projectId,
+        deviceId: dto.deviceId,
         expiresAt,
       });
 

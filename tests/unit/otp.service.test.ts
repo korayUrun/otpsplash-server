@@ -19,6 +19,7 @@ import type { PaginatedResult, PaginationOptions } from '@app-types/index';
 
 const PROJECT_ID = '33333333-3333-3333-3333-333333333333';
 const OTP_ID = '44444444-4444-4444-4444-444444444444';
+const DEVICE_ID = '55555555-5555-5555-5555-555555555555';
 
 /** Sabit bir OTPLog döndüren save mock'u için yardımcı. */
 function savedLog(overrides: Partial<OTPLog> = {}): OTPLog {
@@ -27,6 +28,7 @@ function savedLog(overrides: Partial<OTPLog> = {}): OTPLog {
     encryptedCode: 'iv:tag:ct',
     source: Source.ANDROID,
     projectId: PROJECT_ID,
+    deviceId: DEVICE_ID,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     expiresAt: new Date('2026-01-08T00:00:00.000Z'),
     ...overrides,
@@ -79,15 +81,17 @@ describe('OtpService.processAndDeliver', () => {
       code: '123456',
       source: Source.ANDROID,
       projectId: PROJECT_ID,
+      deviceId: DEVICE_ID,
     });
 
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.deliveredTo).toBe(2);
     }
-    // DB'ye düz kod değil şifreli değer yazılır.
+    // DB'ye düz kod değil şifreli değer + kaynak cihaz yazılır.
     const saveArg = m.repository.save.mock.calls[0]?.[0] as CreateOtpLogData;
     expect(saveArg.encryptedCode).toBe('iv:tag:ct');
+    expect(saveArg.deviceId).toBe(DEVICE_ID);
     // Emit yalnızca kayıttan sonra ve düz kodla yapılır.
     const notifyArg = m.notifier.notify.mock.calls[0]?.[1] as OtpNotification;
     expect(notifyArg.code).toBe('123456');
@@ -104,6 +108,7 @@ describe('OtpService.processAndDeliver', () => {
       smsText: 'Kodunuz: 654321',
       source: Source.IOS_SHORTCUT,
       projectId: PROJECT_ID,
+      deviceId: DEVICE_ID,
     });
 
     expect(result.success).toBe(true);
@@ -119,6 +124,7 @@ describe('OtpService.processAndDeliver', () => {
       code: 'abc',
       source: Source.ANDROID,
       projectId: PROJECT_ID,
+      deviceId: DEVICE_ID,
     });
 
     expect(result.success).toBe(false);
@@ -137,6 +143,7 @@ describe('OtpService.processAndDeliver', () => {
       smsText: 'Merhaba',
       source: Source.ANDROID,
       projectId: PROJECT_ID,
+      deviceId: DEVICE_ID,
     });
 
     expect(result.success).toBe(false);
@@ -151,6 +158,7 @@ describe('OtpService.processAndDeliver', () => {
     const result = await buildService(m).processAndDeliver({
       source: Source.ANDROID,
       projectId: PROJECT_ID,
+      deviceId: DEVICE_ID,
     });
 
     expect(result.success).toBe(false);
@@ -170,6 +178,7 @@ describe('OtpService.processAndDeliver', () => {
       code: '123456',
       source: Source.ANDROID,
       projectId: PROJECT_ID,
+      deviceId: DEVICE_ID,
     });
 
     expect(result.success).toBe(false);
@@ -191,6 +200,7 @@ describe('OtpService.processAndDeliver', () => {
         code: '123456',
         source: Source.ANDROID,
         projectId: PROJECT_ID,
+        deviceId: DEVICE_ID,
       }),
     ).rejects.toThrow('DB down');
     expect(m.notifier.notify).not.toHaveBeenCalled();

@@ -16,13 +16,21 @@ Kıdemli backend mühendisi. Stripe/Google kalitesinde kod yaz.
 
 ```
 SMS gelir (Android: otomatik | iOS: Shortcuts)
-  → POST /api/otp
-    → JWT doğrula → parse → AES-256-GCM şifrele → DB kaydet
+  → POST /api/otp (X-Device-Secret header ile)
+    → Device doğrula → parse → AES-256-GCM şifrele → DB kaydet
       → Socket.IO emit → project:${projectId} odası → X'in ekranı
 ```
 
 **Kullanıcı rolleri:** RECEIVER (OTP gönderir) | DEVELOPER (OTP alır) | ADMIN (yönetir)
 **Proje izolasyonu:** Banka OTP'si → sadece banka developer'larına. Her proje ayrı oda.
+
+**İki auth modeli (FAZ 6 sonrası):**
+```
+Mobil Uygulama (Y açıp kapatıyor, login/dashboard)     → JWT (kullanıcı oturumu)
+Android BroadcastReceiver (arka planda sürekli çalışan) → Device Secret (cihaz kimliği)
+iOS Shortcut (arka planda sürekli çalışan)              → Device Secret (cihaz kimliği)
+X Developer Dashboard                                    → JWT (kullanıcı oturumu)
+```
 
 ---
 
@@ -36,7 +44,8 @@ SMS gelir (Android: otomatik | iOS: Shortcuts)
 | Gerçek zamanlı | Socket.IO 4 | In-memory, adapter-ready |
 | ORM | Prisma 5 | — |
 | Veritabanı | PostgreSQL 15 | — |
-| Auth | jsonwebtoken | access 15dk / refresh 30gün |
+| Auth (kullanıcı) | jsonwebtoken | access 15dk / refresh 30gün |
+| Auth (cihaz) | Device Secret | 256-bit random, argon2id hash'li, süresiz |
 | Parola | **argon2id** | bcryptjs değil — OWASP 2024, C++ binding, 3-5x hızlı |
 | Validation | Zod | Her endpointte zorunlu |
 | Şifreleme | Node.js crypto | AES-256-GCM, native |
@@ -69,11 +78,12 @@ SYNC olmalı:
   ✓ OTP regex parse        (CPU, I/O yok)
   ✓ AES-256-GCM encrypt/decrypt  (crypto sync API)
   ✓ JWT sign/verify        (hızlı, QA iç aracı için yeterli — bottleneck görülürse async'e geç)
+  ✓ Device Secret üretimi  (crypto.randomBytes, sync)
   ✓ Config/env okuma       (startup)
 
 ASYNC olmalı:
   ✓ Her Prisma işlemi      (I/O)
-  ✓ argon2 hash/verify     (CPU-intensive, event loop'u bloklar)
+  ✓ argon2 hash/verify     (CPU-intensive, event loop'u bloklar — Device Secret hash'leme dahil)
   ✓ Socket.IO emit         (I/O)
 
 YASAK:
@@ -90,13 +100,29 @@ YASAK:
 - Stack trace asla client'a sızdırılmaz.
 
 ### Logging
-- pino redact: `['body.password', 'body.code', 'body.smsText', 'headers.authorization']`
+- pino redact: `['body.password', 'body.code', 'body.smsText', 'headers.authorization', 'headers.x-device-secret']`
 - Her request'e UUID (`req.id`) ekle, her response'da dön.
 - Log seviyesi production'da `info`.
 
 ### Socket.IO Scaling Notu
 Şu an in-memory — 5-10 kullanıcı için yeterli. Yatay büyüme gerekirse:
 `io.adapter(createAdapter(pubClient, subClient))` — 1 satır, geri kalan kod değişmez.
+
+### Device Auth Mimari Kararı (FAZ 6)
+JWT bir **kullanıcı oturumunu** temsil eder ve kısa ömürlüdür (15dk). Android BroadcastReceiver
+ve iOS Shortcut ise **kullanıcı oturumu olmayan, arka planda aylarca sessizce çalışan otomasyonlardır.**
+Bu ikisini aynı auth mekanizmasıyla yönetmek mimari hata olur — kısa ömürlü bilet, uzun ömürlü
+otomasyona gömülmüş olur.
+
+Çözüm: Device Secret — süresiz, sadece `POST /api/otp` için yetkili, kullanıcı oturumundan bağımsız.
+
+```
+JWT          → "Ben Y'yim, oturumum açık"        → mobil uygulamanın kendisi kullanır
+Device Secret → "Ben Y'nin şu cihazıyım"          → BroadcastReceiver ve Shortcut kullanır
+```
+
+Bu ayrım hem iOS hem Android için geçerlidir — ikisi de "sürekli arka planda çalışan otomasyon"
+kategorisine girer, ikisi de aynı `deviceAuth` middleware'ini kullanır.
 
 ---
 
@@ -108,29 +134,31 @@ src/
 ├── app.ts                    → Express + Socket.IO factory
 ├── config/
 │   ├── env.ts                → Zod env parse — fail-fast
-│   ├── constants.ts          → CONSTANTS (OTP, ARGON2, SOCKET, PAGINATION, RATE_LIMIT)
+│   ├── constants.ts          → CONSTANTS (OTP, ARGON2, SOCKET, PAGINATION, RATE_LIMIT, DEVICE)
 │   └── prisma.ts             → Singleton
 ├── errors/
 │   ├── AppError.ts           → Abstract base
 │   ├── errors.ts             → ValidationError, AuthenticationError, AuthorizationError,
 │   │                           NotFoundError, ConflictError, OtpParseError,
-│   │                           OtpEncryptionError, InternalError
+│   │                           OtpEncryptionError, DeviceAuthError, InternalError
 │   └── ErrorCode.ts          → Enum (VALIDATION_ERROR, AUTHENTICATION_FAILED,
 │                               TOKEN_EXPIRED, TOKEN_INVALID, FORBIDDEN, NOT_FOUND,
 │                               CONFLICT, USER_NOT_FOUND, PROJECT_NOT_FOUND,
 │                               OTP_NOT_FOUND, OTP_DELIVERY_FAILED,
 │                               OTP_ENCRYPTION_FAILED, INTERNAL_ERROR,
-│                               DATABASE_ERROR, RATE_LIMIT_EXCEEDED)
+│                               DATABASE_ERROR, RATE_LIMIT_EXCEEDED,
+│                               DEVICE_NOT_FOUND, DEVICE_REVOKED, DEVICE_SECRET_INVALID)
 ├── types/
 │   ├── Result.ts             → Result<T>, ok(), fail()
-│   ├── express.d.ts          → Request augmentation: id, user
-│   └── index.ts              → JwtPayload, PaginationOptions, PaginatedResult
+│   ├── express.d.ts          → Request augmentation: id, user, device
+│   └── index.ts              → JwtPayload, DevicePayload, PaginationOptions, PaginatedResult
 ├── infrastructure/
 │   ├── logger.ts             → pino singleton, ILogger interface
 │   └── socket.ts             → Socket.IO singleton, initSocket(), emitOtp()
 ├── middleware/
 │   ├── requestId.ts          → UUID per request
-│   ├── authenticate.ts       → JWT doğrulama
+│   ├── authenticate.ts       → JWT doğrulama (kullanıcı oturumu — login/dashboard/history)
+│   ├── deviceAuth.ts         → Device Secret doğrulama (POST /api/otp)
 │   ├── authorize.ts          → Rol kontrolü: authorize(...roles)
 │   ├── validate.ts           → Generic Zod middleware
 │   ├── rateLimiter.ts        → otpRateLimit, loginRateLimit, registerRateLimit
@@ -145,6 +173,14 @@ src/
 │   │   ├── auth.controller.ts    → HTTP katmanı
 │   │   ├── auth.routes.ts        → Route tanımları
 │   │   └── auth.schemas.ts       → Zod şemaları
+│   ├── device/
+│   │   ├── device.interfaces.ts  → IDeviceService, IDeviceRepository, ISecretService, DTO'lar
+│   │   ├── secret.service.ts     → Device Secret üret (sync) + hash/verify (async, argon2id)
+│   │   ├── device.repository.ts  → Prisma CRUD — ASYNC
+│   │   ├── device.service.ts     → register, verify, revoke
+│   │   ├── device.controller.ts  → HTTP katmanı
+│   │   ├── device.routes.ts      → Route tanımları
+│   │   └── device.schemas.ts     → Zod şemaları
 │   ├── otp/
 │   │   ├── otp.interfaces.ts     → IOtpParser, IOtpEncryptor, IOtpRepository,
 │   │   │                           IOtpNotifier, IOtpService, DTO'lar
@@ -180,6 +216,7 @@ model User {
   role      Role
   projectId String   @db.Uuid
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  devices   Device[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@index([email])
@@ -193,9 +230,27 @@ model Project {
   apiKey    String   @unique @default(uuid()) @db.Uuid
   users     User[]
   otpLogs   OTPLog[]
+  devices   Device[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   @@map("projects")
+}
+
+model Device {
+  id           String    @id @default(uuid()) @db.Uuid
+  secretHash   String    @db.VarChar(512)   // argon2id hash — plain secret asla saklanmaz
+  platform     Platform
+  userId       String    @db.Uuid
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId    String    @db.Uuid
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  isRevoked    Boolean   @default(false)
+  lastUsedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  otpLogs      OTPLog[]
+  @@index([userId])
+  @@index([projectId])
+  @@map("devices")
 }
 
 model OTPLog {
@@ -204,15 +259,19 @@ model OTPLog {
   source        Source
   projectId     String   @db.Uuid
   project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deviceId      String?  @db.Uuid          // hangi cihazdan geldi — izleme/analiz için
+  device        Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
   createdAt     DateTime @default(now())
   expiresAt     DateTime
   @@index([projectId])
   @@index([expiresAt])
+  @@index([deviceId])
   @@map("otp_logs")
 }
 
-enum Role   { RECEIVER DEVELOPER ADMIN }
-enum Source { ANDROID IOS_SHORTCUT }
+enum Role     { RECEIVER DEVELOPER ADMIN }
+enum Source   { ANDROID IOS_SHORTCUT }
+enum Platform { ANDROID IOS }
 ```
 
 ---
@@ -233,27 +292,40 @@ POST /api/auth/login          → 200 { accessToken, refreshToken, user }
 POST /api/auth/refresh        → 200 { accessToken }
 POST /api/auth/logout         → 200 { message }
 
-POST /api/otp                 → 200 { message, deliveredTo }   [RECEIVER]
-GET  /api/otp/history         → 200 paginated OTPLog[]         [DEVELOPER]
+POST   /api/devices/register  → 201 { deviceId, deviceSecret }   [JWT — RECEIVER]
+                                 deviceSecret SADECE bu response'da düz metin döner,
+                                 bir daha asla gösterilmez (DB'de hash'li saklanır)
+DELETE /api/devices/:id       → 200 { message }                  [JWT — RECEIVER, sahibi]
+GET    /api/devices           → 200 Device[] (secretHash hariç)  [JWT — RECEIVER]
 
-POST   /api/projects               → 201 Project               [ADMIN]
-GET    /api/projects/:id           → 200 Project + users       [üye]
-POST   /api/projects/:id/users     → 200                       [ADMIN]
-DELETE /api/projects/:id/users/:uid→ 200                       [ADMIN]
+POST /api/otp                 → 200 { message, deliveredTo }   [Device Secret — X-Device-Secret header]
+GET  /api/otp/history         → 200 paginated OTPLog[]         [JWT — DEVELOPER]
+
+POST   /api/projects               → 201 Project               [JWT — ADMIN]
+GET    /api/projects/:id           → 200 Project + users       [JWT — üye]
+POST   /api/projects/:id/users     → 200                       [JWT — ADMIN]
+DELETE /api/projects/:id/users/:uid→ 200                       [JWT — ADMIN]
 
 GET /health                   → 200 { status: 'ok', timestamp }
+```
+
+### POST /api/otp — Header Değişikliği
+```
+ÖNCE:  Authorization: Bearer <accessToken>
+SONRA: X-Device-Secret: <deviceSecret>
 ```
 
 ---
 
 ## Güvenlik Kuralları
 
-1. **JWT** — access: 15dk, refresh: 30gün. İki secret FARKLI olmalı.
-2. **Parola** — argon2id: `{ memoryCost: 65536, timeCost: 3, parallelism: 4 }`. Plain text asla loglama.
-3. **AES-256-GCM** — Her encrypt için `crypto.randomBytes(16)` IV. Format: `base64(iv):base64(authTag):base64(ciphertext)`. Decrypt'te her bileşeni parse et, boyut doğrula (IV=16 byte, authTag=16 byte), `decipher.final()` try/catch zorunlu — hata → OtpEncryptionError.
-4. **Rate limiting** — `/api/otp`: 60/dk | `/api/auth/login`: 10/dk | `/api/auth/register`: 5/dk.
-5. **HTTP** — `helmet()`, `express.json({ limit: '10kb' })`, CORS whitelist.
-6. **Loglama** — Parola, OTP kodu, JWT token asla loglanmaz (pino redact).
+1. **JWT** — access: 15dk, refresh: 30gün. İki secret FARKLI olmalı. Sadece kullanıcı oturumu (login/dashboard/history) için.
+2. **Device Secret** — `crypto.randomBytes(32)` ile üret (256-bit), hex string olarak döndür. DB'de argon2id ile hash'lenir, plain text asla saklanmaz. Süresiz — sadece manuel revoke ile geçersiz olur. Sadece `POST /api/otp` yetkisi var, başka hiçbir endpointe erişemez.
+3. **Parola** — argon2id: `{ memoryCost: 65536, timeCost: 3, parallelism: 4 }`. Plain text asla loglama. Aynı parametreler Device Secret hash'leme için de kullanılır.
+4. **AES-256-GCM** — Her encrypt için `crypto.randomBytes(16)` IV. Format: `base64(iv):base64(authTag):base64(ciphertext)`. Decrypt'te her bileşeni parse et, boyut doğrula (IV=16 byte, authTag=16 byte), `decipher.final()` try/catch zorunlu — hata → OtpEncryptionError.
+5. **Rate limiting** — `/api/otp`: 60/dk | `/api/auth/login`: 10/dk | `/api/auth/register`: 5/dk | `/api/devices/register`: 5/dk.
+6. **HTTP** — `helmet()`, `express.json({ limit: '10kb' })`, CORS whitelist.
+7. **Loglama** — Parola, OTP kodu, JWT token, Device Secret asla loglanmaz (pino redact).
 
 ---
 
@@ -272,6 +344,7 @@ OTP_ENCRYPTION_KEY=         # 64 hex karakter (32 byte) — node -e "console.log
 OTP_TTL_DAYS=7
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
+DEVICE_SECRET_BYTES=32      # 256-bit
 ```
 
 ---
@@ -355,11 +428,15 @@ RATE_LIMIT_MAX_REQUESTS=60
 
 **Hedef:** OTP gelir → parse → şifrele → DB → Socket emit.
 
+> **Not:** Bu faz tamamlandığında `POST /api/otp` hâlâ JWT ile korunuyordu (eski mimari).
+> FAZ 6'da bu endpoint Device Secret'a geçirildi. Aşağıdaki açıklama orijinal haliyle
+> korunmuştur — FAZ 6'daki değişiklik notlarına bak.
+
 **Yapılacaklar:**
 
 `src/infrastructure/socket.ts`:
 - Singleton initSocket() + emitOtp()
-- Bağlantıda JWT doğrula (middleware olarak)
+- Bağlantıda JWT doğrula (middleware olarak) — bu değişmedi, dashboard bağlantısı için JWT kalır
 - DEVELOPER rolü → `project:${projectId}` odasına katıl
 - RECEIVER → odaya katılmaz
 - Scaling notu: adapter geçişi için hazır, kod değişmez
@@ -431,9 +508,9 @@ RATE_LIMIT_MAX_REQUESTS=60
 
 **Yapılacaklar:**
 
-`tests/setup.ts` — beforeEach: OTPLog → User → Project sırasıyla deleteMany (FK sırası)
-`tests/helpers/fixtures.ts` — createTestProject, createTestUser, createTestOtpLog fabrikaları
-`tests/helpers/auth.helper.ts` — getReceiverToken, getDeveloperToken, getAdminToken
+`tests/setup.ts` — beforeEach: OTPLog → Device → User → Project sırasıyla deleteMany (FK sırası)
+`tests/helpers/fixtures.ts` — createTestProject, createTestUser, createTestOtpLog, createTestDevice fabrikaları
+`tests/helpers/auth.helper.ts` — getReceiverToken, getDeveloperToken, getAdminToken, getDeviceSecret
 
 `jest.config.ts` — ts-jest, path alias mapper, coverageThreshold: 80% (branches, functions, lines, statements)
 
@@ -461,10 +538,92 @@ RATE_LIMIT_MAX_REQUESTS=60
 
 ---
 
+## FAZ 6 — Device Authentication (JWT'den Ayrıştırma)
+
+**Hedef:** `POST /api/otp` artık JWT yerine Device Secret ile korunur. Android BroadcastReceiver
+ve iOS Shortcut süresiz, kullanıcı oturumundan bağımsız bir kimlikle çalışır.
+
+**Neden bu faz var:** FAZ 2-3'te `POST /api/otp` JWT (access token, 15dk ömürlü) ile korunuyordu.
+Ancak Android'in arka plan servisi ve iOS Shortcut'ı aylarca kullanıcı müdahalesi olmadan
+çalışması gereken otomasyonlardır. 15 dakikalık bir bileti bu kadar uzun süre taşımaları
+mimari olarak yanlıştır. Bu faz, "kullanıcı oturumu" (JWT) ile "cihaz kimliği" (Device Secret)
+kavramlarını birbirinden ayırır.
+
+**Yapılacaklar:**
+
+`src/modules/device/`:
+- **interfaces.ts** — `IDeviceService`, `IDeviceRepository`, `ISecretService`, DTO'lar (RegisterDeviceDto, DeviceResult)
+- **secret.service.ts**:
+  - `generate()`: `crypto.randomBytes(env.DEVICE_SECRET_BYTES).toString('hex')` — SYNC, 256-bit
+  - `hash(secret)`: argon2id ile hash'le — ASYNC (password.service.ts ile aynı argon2 parametreleri, tekrar kullan)
+  - `verify(secret, hash)`: argon2.verify — ASYNC
+- **device.repository.ts** — `create()`, `findById()`, `findActiveById()` (isRevoked: false filtresi), `revoke()`, `updateLastUsed()` — hepsi ASYNC
+- **device.service.ts**:
+  - `register(dto, user)`: secret üret (SYNC) → hash'le (AWAIT) → DB'ye kaydet (AWAIT) → plain secret'ı SADECE bu response'ta dön, bir daha asla
+  - `verify(plainSecret)`: tüm aktif device'ları gez, her biri için argon2.verify dene (AWAIT) — **NOT:** Bu yaklaşım device sayısı arttıkça yavaşlar; alternatif olarak secret'ın ilk N karakterini DB'de indexlenebilir bir "lookup prefix" olarak saklamak performans optimizasyonudur, ama 5-10 cihaz için gereksiz, şimdilik basit tutulur
+  - `revoke(deviceId, requestingUserId)`: sahiplik kontrolü (AuthorizationError) → isRevoked: true (AWAIT)
+- **device.controller.ts**, **device.routes.ts**, **device.schemas.ts**
+
+`src/middleware/deviceAuth.ts`:
+- `X-Device-Secret` header'ını oku — yoksa `DeviceAuthError` (401)
+- `deviceService.verify(secret)` çağır — bulunamazsa veya revoke edilmişse `DeviceAuthError`
+- `device.updateLastUsed()` çağır (AWAIT, fire-and-forget olabilir — response'u bekletmesin)
+- `req.device = { id, userId, projectId, platform }` olarak set et
+- `next()`
+
+**Mevcut kod değişiklikleri:**
+- `src/modules/otp/otp.routes.ts` — `POST /` route'undaki `authenticate, authorize('RECEIVER')` middleware'leri kaldırılır, yerine `deviceAuth` middleware'i konur
+- `src/modules/otp/otp.controller.ts` — `receiveOtp` artık `req.user.projectId` yerine `req.device.projectId` kullanır
+- `src/modules/otp/otp.service.ts` — `processAndDeliver` imzasına `deviceId` parametresi eklenir, `OTPLog.deviceId` alanına yazılır
+- `prisma/schema.prisma` — `Device` modeli, `Platform` enum, `OTPLog.deviceId` ilişkisi eklenir
+- `src/errors/errors.ts` — `DeviceAuthError extends AppError` eklenir (statusCode 401, errorCode DEVICE_SECRET_INVALID)
+- `src/types/index.ts` — `DevicePayload` interface eklenir, `express.d.ts`'e `req.device` eklenir
+- `npx prisma migrate dev --name add_device_auth`
+
+**Tamamlanma Kriterleri:**
+- [ ] `POST /api/devices/register` → JWT (RECEIVER) ile çağrılır, 201 + `{ deviceId, deviceSecret }` döner
+- [ ] Dönen `deviceSecret` bir daha hiçbir endpointte görünmez (DB'de sadece hash var)
+- [ ] `POST /api/otp` artık `X-Device-Secret` header'ı ile çalışır, `Authorization: Bearer` ile çalışmaz
+- [ ] Geçersiz Device Secret → 401 `DEVICE_SECRET_INVALID`
+- [ ] Revoke edilmiş Device Secret → 401 `DEVICE_REVOKED`
+- [ ] `DELETE /api/devices/:id` → sadece cihazın sahibi (JWT ile) revoke edebilir, başkası → 403
+- [ ] `GET /api/devices` → kullanıcının kendi cihazlarını listeler, `secretHash` response'ta yok
+- [ ] OTP kaydı artık `deviceId` ile ilişkilendiriliyor
+- [ ] Eski JWT tabanlı `POST /api/otp` testleri kaldırıldı/güncellendi, yeni Device Secret testleri eklendi
+- [ ] `npm run test:unit` → secret.service testleri geçer
+- [ ] `npm run test:integration` → device ve güncellenmiş otp testleri geçer
+
+**Unit test kapsamı** (`tests/unit/secret.service.test.ts`):
+- generate() → 64 karakter hex string (32 byte) üretir
+- generate() → her çağrıda farklı değer üretir
+- hash() → verify() → aynı secret için true döner
+- verify() → yanlış secret için false döner (exception değil)
+- hash() → her çağrıda farklı hash üretir (argon2 salt randomness)
+
+**Integration test kapsamı** (`tests/integration/device.test.ts`):
+- POST /api/devices/register: JWT (RECEIVER) → 201, deviceSecret döner
+- POST /api/devices/register: JWT (DEVELOPER) → 403 (sadece RECEIVER cihaz kaydedebilir)
+- POST /api/devices/register: token yok → 401
+- DELETE /api/devices/:id: sahibi → 200
+- DELETE /api/devices/:id: sahibi değil → 403
+- DELETE /api/devices/:id: olmayan device → 404
+- GET /api/devices: sadece kendi cihazları döner, secretHash içermez
+
+**Integration test kapsamı** (`tests/integration/otp.test.ts` — güncellenmiş):
+- POST /api/otp: geçerli X-Device-Secret → 200
+- POST /api/otp: X-Device-Secret yok → 401 DEVICE_SECRET_INVALID
+- POST /api/otp: geçersiz X-Device-Secret → 401 DEVICE_SECRET_INVALID
+- POST /api/otp: revoke edilmiş device → 401 DEVICE_REVOKED
+- POST /api/otp: Authorization: Bearer header'ı artık işe yaramıyor (eski davranış kaldırıldı)
+- OTPLog.deviceId doğru cihaza işaret ediyor
+
+---
+
 ## Notlar
 
 - Redis yok. 5-10 kullanıcı için PostgreSQL + in-memory Socket.IO yeterli.
 - Socket.IO adapter geçişi: `io.adapter(createAdapter(pub, sub))` — 1 satır, geri kalan değişmez.
 - JWT verify sync — QA iç aracı için bottleneck değil. Profiling'de sorun görülürse async'e geç.
 - Mobil: `otpsplash-mobile` — ayrı repo, React Native + TypeScript.
-- İleride: Redis adapter, argon2 rehash, refresh token blacklist, key rotation.
+- Device Secret: hem Android hem iOS aynı modeli kullanır — tutarlı, tek middleware.
+- İleride: Redis adapter, argon2 rehash, refresh token blacklist, key rotation, Device Secret lookup prefix optimizasyonu (cihaz sayısı 100+ olursa).

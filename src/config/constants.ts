@@ -38,7 +38,15 @@ export const CONSTANTS = {
     OTP_MAX: 60,
     LOGIN_MAX: 10,
     REGISTER_MAX: 5,
+    DEVICE_REGISTER_MAX: 5,
     WINDOW_MS: 60_000,
+  },
+  DEVICE: {
+    /**
+     * Cihaz kimliği (Device Secret) başlığı. Express header'ları küçük harfe
+     * indirir, bu yüzden değer lowercase tutulur (`req.headers[...]` ile eşleşsin).
+     */
+    SECRET_HEADER: 'x-device-secret',
   },
   TIME: {
     /** Bir günün milisaniye karşılığı (OTP TTL hesabı). */

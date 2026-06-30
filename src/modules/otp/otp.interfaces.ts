@@ -6,14 +6,16 @@ import type { PaginatedResult, PaginationOptions } from '@app-types/index';
 
 /**
  * `POST /api/otp` iş katmanı girişi.
- * `smsText` veya `code`'dan en az biri dolu olmalı; `projectId` body'den değil
- * kimliği doğrulanmış kullanıcıdan (`req.user.projectId`) gelir — proje izolasyonu.
+ * `smsText` veya `code`'dan en az biri dolu olmalı; `projectId`/`deviceId` body'den
+ * değil doğrulanmış cihazdan (`req.device`) gelir — proje izolasyonu + kaynak izleme.
  */
 export interface ProcessOtpDTO {
   smsText?: string;
   code?: string;
   source: Source;
   projectId: string;
+  /** OTP'yi gönderen cihaz (Device Secret ile doğrulandı) — kaynak izleme/analiz. */
+  deviceId: string;
 }
 
 /** `POST /api/otp` başarı çıktısı. */
@@ -42,6 +44,8 @@ export interface CreateOtpLogData {
   encryptedCode: string;
   source: Source;
   projectId: string;
+  /** Kaydı oluşturan cihaz; ilişki SetNull olduğundan opsiyonel tutulur. */
+  deviceId?: string;
   expiresAt: Date;
 }
 

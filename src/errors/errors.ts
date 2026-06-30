@@ -98,6 +98,25 @@ export class OtpEncryptionError extends AppError {
 }
 
 /**
+ * 401 — Cihaz kimliği (Device Secret) doğrulanamadı.
+ * `POST /api/otp` için kullanılır; JWT'den bağımsız cihaz auth katmanıdır.
+ * `errorCode` override edilebilir: geçersiz/eksik secret → DEVICE_SECRET_INVALID,
+ * revoke edilmiş cihaz → DEVICE_REVOKED.
+ */
+export class DeviceAuthError extends AppError {
+  readonly statusCode = 401;
+  readonly errorCode: ErrorCode;
+
+  constructor(
+    message = 'Cihaz kimliği doğrulanamadı',
+    errorCode: ErrorCode = ErrorCode.DEVICE_SECRET_INVALID,
+  ) {
+    super(message, true);
+    this.errorCode = errorCode;
+  }
+}
+
+/**
  * 500 — Beklenmeyen sunucu hatası (bug). Mesaj client'a sızdırılmaz.
  */
 export class InternalError extends AppError {

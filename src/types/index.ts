@@ -1,4 +1,4 @@
-import type { Role } from '@prisma/client';
+import type { Platform, Role } from '@prisma/client';
 
 /**
  * Access token içinde taşınan ve `req.user` olarak kullanılan kimlik bilgisi.
@@ -9,6 +9,17 @@ export interface JwtPayload {
   email: string;
   role: Role;
   projectId: string;
+}
+
+/**
+ * Device Secret doğrulandıktan sonra `req.device` olarak taşınan cihaz kimliği.
+ * JWT'den bağımsızdır — yalnızca `POST /api/otp` akışında doldurulur.
+ */
+export interface DevicePayload {
+  id: string;
+  userId: string;
+  projectId: string;
+  platform: Platform;
 }
 
 /**

@@ -11,8 +11,9 @@ const isIntegration = testPath.includes(`${sep}integration${sep}`);
 
 if (isIntegration) {
   beforeEach(async () => {
-    // FK sırası: OTPLog → User → Project.
+    // FK sırası: OTPLog → Device → User → Project.
     await prisma.oTPLog.deleteMany();
+    await prisma.device.deleteMany();
     await prisma.user.deleteMany();
     await prisma.project.deleteMany();
     // Rate limit sayaçlarını sıfırla → testler birbirini etkilemesin.

@@ -14,6 +14,7 @@ model User {
   role      Role
   projectId String   @db.Uuid
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  devices   Device[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -28,10 +29,29 @@ model Project {
   apiKey    String   @unique @default(uuid()) @db.Uuid
   users     User[]
   otpLogs   OTPLog[]
+  devices   Device[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("projects")
+}
+
+model Device {
+  id         String    @id @default(uuid()) @db.Uuid
+  secretHash String    @db.VarChar(512) // argon2id hash — plain secret asla saklanmaz
+  platform   Platform
+  userId     String    @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId  String    @db.Uuid
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  isRevoked  Boolean   @default(false)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  otpLogs    OTPLog[]
+
+  @@index([userId])
+  @@index([projectId])
+  @@map("devices")
 }
 
 model OTPLog {
@@ -40,11 +60,14 @@ model OTPLog {
   source        Source
   projectId     String   @db.Uuid
   project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deviceId      String?  @db.Uuid // hangi cihazdan geldi — izleme/analiz için
+  device        Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
   createdAt     DateTime @default(now())
   expiresAt     DateTime
 
   @@index([projectId])
   @@index([expiresAt])
+  @@index([deviceId])
   @@map("otp_logs")
 }
 
@@ -57,4 +80,9 @@ enum Role {
 enum Source {
   ANDROID
   IOS_SHORTCUT
+}
+
+enum Platform {
+  ANDROID
+  IOS
 }
