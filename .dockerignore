@@ -1,0 +1,40 @@
+# Build context'i ince tut → daha hızlı build, daha küçük imaj, sır sızıntısı yok.
+
+# Bağımlılıklar ve derleme çıktısı imaj içinde yeniden üretilir.
+node_modules
+dist
+coverage
+
+# Sırlar — asla imaja girmemeli (değerler runtime env'den gelir).
+.env
+.env.*
+!.env.example
+!.env.test.example
+
+# Test ve araç dosyaları runtime imajı için gereksiz.
+tests
+jest.config.ts
+tsconfig.jest.json
+eslint.config.js
+nodemon.json
+
+# Docker'ın kendisi.
+Dockerfile
+Dockerfile.dev
+.dockerignore
+docker-compose.yml
+docker-compose.test.yml
+
+# VCS ve editör.
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+.claude
+.claudeignore
+
+# Dokümantasyon ve loglar.
+*.md
+npm-debug.log*
+*.log

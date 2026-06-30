@@ -26,6 +26,23 @@ const config: Config = {
   },
   clearMocks: true,
   testTimeout: 20_000,
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    // Bootstrap/entry — process handler'ları ve graceful shutdown (otomatik test kapsamı dışı).
+    '!src/index.ts',
+    // Yalnızca tip tanımı — runtime kod yok.
+    '!src/**/*.interfaces.ts',
+    '!src/**/*.d.ts',
+    '!src/types/index.ts',
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 80,
+      functions: 80,
+      lines: 80,
+      statements: 80,
+    },
+  },
 };
 
 export default config;
