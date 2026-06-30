@@ -12,9 +12,16 @@
 [x] FAZ 4 — Proje Yönetimi                (commit edildi)
 [x] FAZ 5 — Test Coverage ve Deploy       (commit edildi)
 [x] FAZ 6 — Device Authentication         (commit edildi)
-[x] FAZ 7 — Gruplar ve Yönlendirme        (tamamlandı — tüm kriterler + testler geçiyor, commit bekliyor)
-[ ] FAZ 8 — Servis Tespiti ve Kayıt Defteri (üzerinde çalışılıyor)
+[x] FAZ 7 — Gruplar ve Yönlendirme        (commit edildi — 5f00276)
+[ ] FAZ 8 — Servis Tespiti ve Kayıt Defteri (kısmi iskelet mevcut — aşağıdaki nota bak)
 ```
+
+> **FAZ 8 — kısmi iskelet working directory'de mevcut, henüz commit edilmedi:**
+> `prisma/schema.prisma` (Device.deviceName/phoneNumber), `constants.ts` (REGISTRY bloğu),
+> `env.ts` (SERVICE_REGISTRY_CACHE_TTL_MS), `routes/index.ts` (service-registry router),
+> `src/modules/service-registry/` (boş/başlangıç), migration:
+> `20260630182340_add_device_profile_fields`. FAZ 8'e başlarken bunları silme, üzerine inşa et.
+> `fazUpdate.md` untracked, FAZ 7/8'e ait değil, dokunma.
 
 Yeni bir oturuma başlarken Claude Code'a şunu söyle:
 ```
