@@ -621,7 +621,38 @@ RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
 DEVICE_SECRET_BYTES=32      # 256-bit
 SERVICE_REGISTRY_CACHE_TTL_MS=60000   # ServiceRegistry kurallarının in-memory cache ömrü
+CORS_ORIGIN=*                # Yerel ağ testi için. Production'da gerçek origin'lerle değiştirilecek.
 ```
+
+---
+
+## Yerel Ağ Üzerinden Mobil Test
+
+Production'a deploy edilmeden önce, geliştirme aşamasında fiziksel telefonla (Android/iOS)
+test etmek için backend'in **yerel ağda erişilebilir** olması gerekir. İki teknik önkoşul:
+
+1. **`app.listen()` host parametresi `0.0.0.0` olmalı, `localhost` değil.**
+   ```typescript
+   httpServer.listen(env.PORT, '0.0.0.0', () => { ... })
+   ```
+   `localhost` (veya host belirtilmeden bırakılırsa varsayılan) sadece makinenin kendi
+   loopback arayüzünden gelen isteklere cevap verir — telefon ağ üzerinden bağlanamaz.
+   `0.0.0.0` tüm ağ arayüzlerinden gelen bağlantıları dinler.
+
+2. **CORS origin yerel test sırasında `*` (wildcard) olarak bırakılabilir.**
+   Native mobil HTTP istekleri (Android/iOS) tarayıcı CORS kısıtına tabi değildir — CORS bir
+   tarayıcı güvenlik mekanizmasıdır, native uygulamalar bundan etkilenmez. Bu yüzden mobil
+   `POST /api/otp`, login vb. istekleri için CORS hiç gündeme gelmez. Asıl önemli olduğu yer
+   Socket.IO bağlantısı ve ileride eklenecek Admin web dashboard'udur — onlar tarayıcı tabanlı
+   çalıştığı için CORS kısıtına tabidir. Yerel geliştirme aşamasında `CORS_ORIGIN=*` sorun
+   çıkarmaz; production'a geçerken gerçek origin'lerle (örn. dashboard domain'i) değiştirilir.
+
+**Mac'in yerel ağ IP'sini bulma:**
+```bash
+ipconfig getifaddr en0   # Wi-Fi bağlıysa
+```
+Bu IP'yi mobil tarafın `.env` dosyasındaki `BACKEND_URL`'e yazarsın (örn. `http://192.168.1.42:3000`).
+Telefon ve Mac **aynı Wi-Fi ağında** olmalı.
 
 ---
 

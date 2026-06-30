@@ -36,7 +36,7 @@ export function createApp(): AppContext {
   app.use(helmet());
   app.use(
     cors({
-      origin: env.corsOrigins,
+      origin: env.CORS_ORIGIN,
       credentials: true,
     }),
   );
@@ -59,7 +59,7 @@ export function createApp(): AppContext {
 
   const httpServer = createServer(app);
   // Socket.IO: JWT auth + proje odaları socket.ts içinde kurulur (SRP).
-  const io = initSocket(httpServer, env.corsOrigins);
+  const io = initSocket(httpServer, env.CORS_ORIGIN);
 
   return { app, httpServer, io };
 }

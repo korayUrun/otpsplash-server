@@ -137,7 +137,7 @@ export function handleConnection(socket: AppSocket): void {
  */
 export function initSocket(
   httpServer: HttpServer,
-  corsOrigins: string[],
+  corsOrigin: string,
 ): AppIOServer {
   const io: AppIOServer = new Server<
     DefaultEventsMap,
@@ -145,7 +145,7 @@ export function initSocket(
     DefaultEventsMap,
     SocketData
   >(httpServer, {
-    cors: { origin: corsOrigins, credentials: true },
+    cors: { origin: corsOrigin, credentials: true },
   });
 
   io.use(authenticateSocket);

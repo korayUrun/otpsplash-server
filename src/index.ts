@@ -24,7 +24,8 @@ async function bootstrap(): Promise<void> {
   const { httpServer } = createApp();
 
   await new Promise<void>((resolve) => {
-    httpServer.listen(env.PORT, () => {
+    // '0.0.0.0' → tüm ağ arayüzlerinden dinler (fiziksel telefonla yerel ağ testi için gerekli).
+    httpServer.listen(env.PORT, '0.0.0.0', () => {
       logger.info({ port: env.PORT, env: env.NODE_ENV }, 'sunucu dinlemede');
       resolve();
     });

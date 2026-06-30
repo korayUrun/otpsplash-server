@@ -52,7 +52,9 @@ const envSchema = z
       .nonnegative()
       .default(60_000),
 
-    CORS_ORIGINS: z.string().default('http://localhost:3000'),
+    // cors() middleware ve Socket.IO origin'i. Yerel ağ/mobil testte '*' (wildcard),
+    // production'da gerçek origin ile değiştirilir.
+    CORS_ORIGIN: z.string().default('*'),
 
     RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
     RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(60),
@@ -62,10 +64,7 @@ const envSchema = z
     path: ['JWT_REFRESH_SECRET'],
   });
 
-export type Env = z.infer<typeof envSchema> & {
-  /** CORS_ORIGINS string'inden türetilmiş whitelist. */
-  corsOrigins: string[];
-};
+export type Env = z.infer<typeof envSchema>;
 
 /**
  * process.env'i doğrular. Hata varsa açıklayıcı mesaj basıp süreci sonlandırır.
@@ -85,11 +84,7 @@ function loadEnv(): Env {
     process.exit(1);
   }
 
-  const corsOrigins = parsed.data.CORS_ORIGINS.split(',')
-    .map((origin) => origin.trim())
-    .filter((origin) => origin.length > 0);
-
-  return { ...parsed.data, corsOrigins };
+  return parsed.data;
 }
 
 export const env: Env = loadEnv();
