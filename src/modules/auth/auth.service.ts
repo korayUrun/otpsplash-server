@@ -56,6 +56,7 @@ export class AuthService implements IAuthService {
       const user = await this.prisma.user.create({
         data: {
           email: dto.email,
+          name: dto.name ?? null,
           password: hashed,
           role: dto.role,
           projectId: dto.projectId,
@@ -148,6 +149,7 @@ export class AuthService implements IAuthService {
     return {
       id: user.id,
       email: user.email,
+      name: user.name,
       role: user.role,
       projectId: user.projectId,
       createdAt: user.createdAt,

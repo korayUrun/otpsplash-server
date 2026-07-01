@@ -33,6 +33,8 @@ export interface RemoveUserDTO {
 export interface ProjectMember {
   id: string;
   email: string;
+  /** Görünen ad; opsiyonel. Mobil developer listesi `name ?? email` fallback yapar. */
+  name: string | null;
   role: Role;
   createdAt: Date;
 }

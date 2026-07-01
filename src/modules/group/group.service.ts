@@ -126,6 +126,7 @@ export class GroupService implements IGroupService {
         members: group.members.map((member) => ({
           userId: member.userId,
           email: member.user.email,
+          name: member.user.name,
         })),
       }));
       return ok(views);

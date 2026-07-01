@@ -39,7 +39,11 @@ export class RoutingResolver implements IRoutingResolver {
     }
     // developerId düz kolon olduğundan e-postalar toplu çekilir (salt-okunur görünüm).
     const users = await this.repository.findUsersByIds(ids);
-    return users.map((user) => ({ id: user.id, email: user.email }));
+    return users.map((user) => ({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+    }));
   }
 
   /** Aktif kuralları benzersiz hedef developer id listesine indirger (SYNC). */

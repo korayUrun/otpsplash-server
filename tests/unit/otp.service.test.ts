@@ -76,6 +76,7 @@ function buildMocks(): Mocks {
       save: jest.fn(),
       findById: jest.fn(),
       findByProject: jest.fn(),
+      findByReceiver: jest.fn(),
       updateSharingActive: jest.fn(),
       deleteExpired: jest.fn(),
     },
@@ -286,14 +287,16 @@ describe('OtpService.getSharingTargets', () => {
     const m = buildMocks();
     m.repository.findById.mockResolvedValue(savedLog());
     m.routing.resolveTargetDetails.mockResolvedValue([
-      { id: DEV_A, email: 'dev@test.com' },
+      { id: DEV_A, email: 'dev@test.com', name: 'Dev A' },
     ]);
 
     const result = await buildService(m).getSharingTargets(OTP_ID, RECEIVER_ID);
 
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.targets).toEqual([{ id: DEV_A, email: 'dev@test.com' }]);
+      expect(result.data.targets).toEqual([
+        { id: DEV_A, email: 'dev@test.com', name: 'Dev A' },
+      ]);
     }
     expect(m.routing.resolveTargetDetails).toHaveBeenCalledWith(RECEIVER_ID, SERVICE_ID);
   });

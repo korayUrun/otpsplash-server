@@ -13,10 +13,10 @@ const DEMO_PROJECT_NAME = 'Demo Project';
 const TEST_PASSWORD = 'Test1234';
 
 /** Üç rolü de kapsayan sabit test hesapları (mobil login/signup denemeleri için). */
-const TEST_USERS: ReadonlyArray<{ email: string; role: Role }> = [
-  { email: 'admin@otpsplash.dev', role: Role.ADMIN },
-  { email: 'developer@otpsplash.dev', role: Role.DEVELOPER },
-  { email: 'receiver@otpsplash.dev', role: Role.RECEIVER },
+const TEST_USERS: ReadonlyArray<{ email: string; name: string; role: Role }> = [
+  { email: 'admin@otpsplash.dev', name: 'Admin Kullanıcı', role: Role.ADMIN },
+  { email: 'developer@otpsplash.dev', name: 'Developer Kullanıcı', role: Role.DEVELOPER },
+  { email: 'receiver@otpsplash.dev', name: 'Receiver Kullanıcı', role: Role.RECEIVER },
 ];
 
 /**
@@ -34,11 +34,11 @@ async function main(): Promise<void> {
 
   const hashed = await passwordService.hash(TEST_PASSWORD);
 
-  for (const { email, role } of TEST_USERS) {
+  for (const { email, name, role } of TEST_USERS) {
     await prisma.user.upsert({
       where: { email },
-      update: {}, // varsa dokunma — idempotent
-      create: { email, password: hashed, role, projectId: project.id },
+      update: { name }, // parolaya dokunma; sadece görünen adı senkronla — idempotent
+      create: { email, name, password: hashed, role, projectId: project.id },
     });
   }
 

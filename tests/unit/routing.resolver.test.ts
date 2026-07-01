@@ -64,6 +64,7 @@ function groupRule(memberIds: string[]): RoutingRuleWithTargets {
     user: {
       id: userId,
       email: `${userId}@test.com`,
+      name: null,
       password: 'x',
       role: 'DEVELOPER',
       projectId: 'proj',
@@ -163,6 +164,7 @@ describe('RoutingResolver.resolveTargetDetails', () => {
       {
         id: DEV_A,
         email: 'a@test.com',
+        name: 'Alice',
         password: 'x',
         role: 'DEVELOPER',
         projectId: 'proj',
@@ -177,7 +179,7 @@ describe('RoutingResolver.resolveTargetDetails', () => {
     );
 
     expect(repo.findUsersByIds).toHaveBeenCalledWith([DEV_A]);
-    expect(result).toEqual([{ id: DEV_A, email: 'a@test.com' }]);
+    expect(result).toEqual([{ id: DEV_A, email: 'a@test.com', name: 'Alice' }]);
   });
 
   it('serviceId null → boş liste, kullanıcı sorgusu yapılmaz', async () => {

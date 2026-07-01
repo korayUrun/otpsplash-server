@@ -128,6 +128,7 @@ export class ProjectService implements IProjectService {
       users: project.users.map((user) => ({
         id: user.id,
         email: user.email,
+        name: user.name,
         role: user.role,
         createdAt: user.createdAt,
       })),

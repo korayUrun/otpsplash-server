@@ -71,6 +71,8 @@ export interface RoutingMutationResult {
 export interface TargetUser {
   id: string;
   email: string;
+  /** Görünen ad; opsiyonel. Mobil `name ?? email` fallback yapar. */
+  name: string | null;
 }
 
 /**

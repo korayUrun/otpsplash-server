@@ -38,6 +38,8 @@ export interface RemoveMemberDTO {
 export interface GroupMemberView {
   userId: string;
   email: string;
+  /** Görünen ad; opsiyonel. Mobil `name ?? email` fallback yapar. */
+  name: string | null;
 }
 
 /** `GET /api/groups` çıktısındaki grup görünümü (üyeleriyle, salt-okunur). */

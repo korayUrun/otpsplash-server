@@ -7,6 +7,8 @@ import type { JwtPayload, RefreshPayload } from '@app-types/index';
 /** Kayıt isteği gövdesi. */
 export interface RegisterDTO {
   email: string;
+  /** Görünen ad; opsiyonel. Verilmezse `null` kaydedilir. */
+  name?: string;
   password: string;
   role: Role;
   projectId: string;
@@ -27,6 +29,8 @@ export interface RefreshDTO {
 export interface SafeUser {
   id: string;
   email: string;
+  /** Görünen ad; opsiyonel. Mobil `name ?? email` fallback yapar. */
+  name: string | null;
   role: Role;
   projectId: string;
   createdAt: Date;

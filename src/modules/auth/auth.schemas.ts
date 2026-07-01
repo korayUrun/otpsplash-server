@@ -13,6 +13,12 @@ const passwordSchema = z
 
 export const registerSchema = z.object({
   email: z.string().email('Geçerli bir e-posta giriniz'),
+  name: z
+    .string()
+    .trim()
+    .min(1, 'İsim boş olamaz')
+    .max(100, 'İsim en fazla 100 karakter olabilir')
+    .optional(),
   password: passwordSchema,
   role: z.nativeEnum(Role),
   projectId: z.string().uuid('Geçerli bir proje id giriniz'),

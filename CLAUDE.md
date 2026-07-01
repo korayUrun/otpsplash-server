@@ -364,6 +364,7 @@ src/
 model User {
   id            String         @id @default(uuid()) @db.Uuid
   email         String         @unique @db.VarChar(255)
+  name          String?        @db.VarChar(100)   // görünen ad; opsiyonel — admin panelinde email yerine gösterilir, mobil name ?? email fallback yapar
   password      String         @db.VarChar(512)
   role          Role
   projectId     String         @db.Uuid
@@ -538,7 +539,10 @@ Paginated: { success: true,  data: T[], pagination: {...},   requestId: string }
 
 ### Endpointler
 ```
-POST /api/auth/register       → 201 { accessToken, refreshToken, user }
+POST /api/auth/register       → Body: { email, password, role, projectId, name? }
+                                → 201 { accessToken, refreshToken, user }
+                                  (user görünümü + proje/grup/paylaşım üye listeleri opsiyonel `name` taşır;
+                                   verilmezse null — mobil `name ?? email` fallback yapar)
 POST /api/auth/login          → 200 { accessToken, refreshToken, user }
 POST /api/auth/refresh        → 200 { accessToken }
 POST /api/auth/logout         → 200 { message }
