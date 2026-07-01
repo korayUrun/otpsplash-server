@@ -13,6 +13,7 @@ import type {
 } from '@modules/service-registry/registry.interfaces';
 import type {
   GetHistoryDTO,
+  GetReceiverHistoryDTO,
   IOtpEncryptor,
   IOtpNotifier,
   IOtpRepository,
@@ -20,6 +21,7 @@ import type {
   OtpHistoryItem,
   ProcessOtpDTO,
   ProcessOtpResult,
+  ReceiverOtpHistoryItem,
   SharingTargetsResult,
   ToggleSharingResult,
 } from './otp.interfaces';
@@ -122,6 +124,34 @@ export class OtpService implements IOtpService {
         source: log.source,
         createdAt: log.createdAt,
         expiresAt: log.expiresAt,
+      }));
+
+      return ok({ items, pagination: page.pagination });
+    } catch (error) {
+      return this.toResult(error);
+    }
+  }
+
+  async getReceiverHistory(
+    dto: GetReceiverHistoryDTO,
+  ): Promise<Result<PaginatedResult<ReceiverOtpHistoryItem>>> {
+    try {
+      // findByProject'in AKSİNE: expired + sharing-off DAHİL — receiver kendi kodlarını yönetir.
+      const page = await this.repository.findByReceiver(dto.receiverId, {
+        page: dto.page,
+        limit: dto.limit,
+      });
+
+      // Şifre çözme SYNC — her kayıt için map içinde.
+      const items: ReceiverOtpHistoryItem[] = page.items.map((log) => ({
+        id: log.id,
+        code: this.encryptor.decrypt(log.encryptedCode),
+        source: log.source,
+        createdAt: log.createdAt,
+        expiresAt: log.expiresAt,
+        sharingActive: log.sharingActive,
+        serviceName: log.service?.name ?? null,
+        deviceName: log.device?.deviceName ?? null,
       }));
 
       return ok({ items, pagination: page.pagination });

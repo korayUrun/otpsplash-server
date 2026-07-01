@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { Role } from '@prisma/client';
 import { AuthenticationError, DeviceAuthError } from '@errors/errors';
 import type { IOtpService } from './otp.interfaces';
 import type {
@@ -49,16 +50,27 @@ export class OtpController {
     }
 
     const query = req.query as unknown as HistoryQuery;
-    const result = await this.otpService.getHistory({
-      projectId: req.user.projectId,
-      page: query.page,
-      limit: query.limit,
-    });
+
+    // Rol-duyarlı: RECEIVER kendi kayıtlarını (receiverId ile), DEVELOPER proje feed'ini alır.
+    const result =
+      req.user.role === Role.RECEIVER
+        ? await this.otpService.getReceiverHistory({
+            receiverId: req.user.sub,
+            projectId: req.user.projectId,
+            page: query.page,
+            limit: query.limit,
+          })
+        : await this.otpService.getHistory({
+            projectId: req.user.projectId,
+            page: query.page,
+            limit: query.limit,
+          });
 
     if (!result.success) {
       next(result.error);
       return;
     }
+    // Zarf aynı: hem developer hem receiver için { data: items[], pagination }.
     res.status(200).json({
       success: true,
       data: result.data.items,

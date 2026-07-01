@@ -1,4 +1,4 @@
-import type { OTPLog, Source } from '@prisma/client';
+import type { OTPLog, Prisma, Source } from '@prisma/client';
 import type { Result } from '@app-types/Result';
 import type { PaginatedResult, PaginationOptions } from '@app-types/index';
 import type { TargetUser } from '@modules/routing/routing.interfaces';
@@ -38,6 +38,13 @@ export interface GetHistoryDTO extends PaginationOptions {
   projectId: string;
 }
 
+/** Receiver geçmiş sorgusu — kendi kayıtları (receiverId ile süzülür). */
+export interface GetReceiverHistoryDTO extends PaginationOptions {
+  receiverId: string;
+  /** Proje izolasyonu güvencesi (savunma amaçlı; sorgu receiverId ile zaten dar). */
+  projectId: string;
+}
+
 /** Geçmiş kaydının client'a dönülen, şifresi çözülmüş görünümü. */
 export interface OtpHistoryItem {
   id: string;
@@ -46,6 +53,25 @@ export interface OtpHistoryItem {
   createdAt: Date;
   expiresAt: Date;
 }
+
+/** Receiver'a dönen zengin geçmiş kaydı (developer'ın minimal item'ından farklı). */
+export interface ReceiverOtpHistoryItem {
+  id: string;
+  code: string;
+  source: Source;
+  createdAt: Date;
+  expiresAt: Date;
+  sharingActive: boolean;
+  /** Çözümlenen servis adı (service.name); çözülemediyse null. */
+  serviceName: string | null;
+  /** Receiver'ın beyan ettiği cihaz adı (device.deviceName); yoksa null. */
+  deviceName: string | null;
+}
+
+/** service + device ilişkileri include edilmiş OTPLog (findByReceiver dönüşü). */
+export type OtpLogWithRelations = Prisma.OTPLogGetPayload<{
+  include: { service: true; device: true };
+}>;
 
 /** `PATCH /api/otp/:id/sharing` çıktısı. */
 export interface ToggleSharingResult {
@@ -125,6 +151,15 @@ export interface IOtpRepository {
     projectId: string,
     options: PaginationOptions,
   ): Promise<PaginatedResult<OTPLog>>;
+  /**
+   * Bir receiver'ın KENDİ kayıtlarını sayfalı döner (createdAt desc).
+   * findByProject'in AKSİNE: sharingActive=false ve süresi dolmuş kayıtlar da GELİR
+   * (receiver kendi kodlarını görüp paylaşımı yönetebilmeli). service + device include edilir.
+   */
+  findByReceiver(
+    receiverId: string,
+    options: PaginationOptions,
+  ): Promise<PaginatedResult<OtpLogWithRelations>>;
   /** Paylaşım durumunu günceller (sahiplik service'te receiverId ile doğrulanır). */
   updateSharingActive(otpId: string, isActive: boolean): Promise<OTPLog>;
   /** Süresi geçmiş tüm kayıtları siler; silinen kayıt sayısını döner. */
@@ -153,6 +188,10 @@ export interface IOtpNotifier {
 export interface IOtpService {
   processAndDeliver(dto: ProcessOtpDTO): Promise<Result<ProcessOtpResult>>;
   getHistory(dto: GetHistoryDTO): Promise<Result<PaginatedResult<OtpHistoryItem>>>;
+  /** Receiver'ın kendi OTP geçmişi (paylaşım durumu + servis/cihaz adıyla). */
+  getReceiverHistory(
+    dto: GetReceiverHistoryDTO,
+  ): Promise<Result<PaginatedResult<ReceiverOtpHistoryItem>>>;
   /**
    * OTP paylaşımını aç/kapat. Sahiplik `OTPLog.receiverId` üzerinden doğrulanır
    * (deviceId null olsa bile çalışır). Kapatıldığında hedef developer'lara `otp:revoked` gider.

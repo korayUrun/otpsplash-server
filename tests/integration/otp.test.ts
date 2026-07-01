@@ -6,6 +6,7 @@ import { AesGcmOtpEncryptor } from '@modules/otp/otp.encryptor';
 import { tokenService } from '@modules/auth/token.service';
 import { createApp } from '../../src/app';
 import {
+  createTestDevice,
   createTestOtpLog,
   createTestProject,
   createTestRoutingRule,
@@ -440,17 +441,6 @@ describe('GET /api/otp/history', () => {
     expect(res.body.pagination.total).toBe(2);
   });
 
-  it('403 — RECEIVER geçmişe erişemez', async () => {
-    const { accessToken } = await getReceiverToken();
-
-    const res = await request(app)
-      .get('/api/otp/history')
-      .set('Authorization', `Bearer ${accessToken}`);
-
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe('FORBIDDEN');
-  });
-
   it('401 — token yok', async () => {
     const res = await request(app).get('/api/otp/history');
     expect(res.status).toBe(401);
@@ -485,6 +475,119 @@ describe('GET /api/otp/history', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(0);
+  });
+});
+
+describe('GET /api/otp/history — RECEIVER rol-duyarlı (kendi geçmişi)', () => {
+  it('200 — RECEIVER artık kendi kayıtlarını görür (403 değil)', async () => {
+    const ctx = await getReceiverToken();
+    await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+      code: '111111',
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${ctx.accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].code).toBe('111111');
+  });
+
+  it('yalnızca kendi kayıtları — başka receiver\'ın OTP\'si asla dönmez', async () => {
+    const me = await getReceiverToken();
+    // Aynı projede ikinci bir receiver + onun OTP'si.
+    const { user: other } = await createTestUser({
+      projectId: me.project.id,
+      role: Role.RECEIVER,
+    });
+    await createTestOtpLog({
+      projectId: me.project.id,
+      receiverId: me.user.id,
+      code: '111111',
+    });
+    await createTestOtpLog({
+      projectId: me.project.id,
+      receiverId: other.id,
+      code: '222222',
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${me.accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].code).toBe('111111');
+  });
+
+  it('süresi dolmuş VE sharingActive:false kayıtlar da görünür', async () => {
+    const ctx = await getReceiverToken();
+    await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+      code: '333333',
+      sharingActive: false,
+      expiresAt: new Date(Date.now() - 1000), // süresi geçmiş
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${ctx.accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].code).toBe('333333');
+    expect(res.body.data[0].sharingActive).toBe(false);
+  });
+
+  it('zengin alanlar — serviceName + deviceName çözümlenir', async () => {
+    const ctx = await getReceiverToken();
+    const service = await createTestService({
+      projectId: ctx.project.id,
+      name: 'Binance',
+    });
+    const { device } = await createTestDevice({
+      userId: ctx.user.id,
+      projectId: ctx.project.id,
+    });
+    await prisma.device.update({
+      where: { id: device.id },
+      data: { deviceName: 'İş Telefonum' },
+    });
+    await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+      serviceId: service.id,
+      deviceId: device.id,
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${ctx.accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].serviceName).toBe('Binance');
+    expect(res.body.data[0].deviceName).toBe('İş Telefonum');
+  });
+
+  it('çözülemeyen servis/cihaz → serviceName ve deviceName null', async () => {
+    const ctx = await getReceiverToken();
+    await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${ctx.accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].serviceName).toBeNull();
+    expect(res.body.data[0].deviceName).toBeNull();
   });
 });
 

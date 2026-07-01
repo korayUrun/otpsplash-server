@@ -54,11 +54,11 @@ otpRouter.post(
   asyncHandler(controller.process),
 );
 
-// Geçmiş yalnızca DEVELOPER'a açık; query sayfalama doğrulanır.
+// Geçmiş: DEVELOPER kendi proje feed'ini, RECEIVER kendi kodlarını görür (controller rol'e göre dallanır).
 otpRouter.get(
   '/history',
   authenticate,
-  authorize(Role.DEVELOPER),
+  authorize(Role.DEVELOPER, Role.RECEIVER),
   validate(historyQuerySchema, 'query'),
   asyncHandler(controller.history),
 );

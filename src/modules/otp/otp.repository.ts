@@ -1,6 +1,10 @@
 import type { OTPLog, PrismaClient } from '@prisma/client';
 import type { PaginatedResult, PaginationOptions } from '@app-types/index';
-import type { CreateOtpLogData, IOtpRepository } from './otp.interfaces';
+import type {
+  CreateOtpLogData,
+  IOtpRepository,
+  OtpLogWithRelations,
+} from './otp.interfaces';
 
 /**
  * Prisma tabanlı OTP repository (DB katmanı — SRP).
@@ -36,6 +40,40 @@ export class PrismaOtpRepository implements IOtpRepository {
     const [items, total] = await Promise.all([
       this.prisma.oTPLog.findMany({
         where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: options.limit,
+      }),
+      this.prisma.oTPLog.count({ where }),
+    ]);
+
+    return {
+      items,
+      pagination: {
+        page: options.page,
+        limit: options.limit,
+        total,
+        totalPages: Math.ceil(total / options.limit),
+      },
+    };
+  }
+
+  /**
+   * Bir receiver'ın KENDİ kayıtlarını sayfalı döner (en yeni önce).
+   * findByProject'in AKSİNE filtre YOKTUR: süresi dolmuş + sharingActive=false kayıtlar da GELİR
+   * — receiver kendi kodlarını görüp paylaşımı yönetebilmeli. service + device include edilir.
+   */
+  async findByReceiver(
+    receiverId: string,
+    options: PaginationOptions,
+  ): Promise<PaginatedResult<OtpLogWithRelations>> {
+    const where = { receiverId };
+    const skip = (options.page - 1) * options.limit;
+
+    const [items, total] = await Promise.all([
+      this.prisma.oTPLog.findMany({
+        where,
+        include: { service: true, device: true },
         orderBy: { createdAt: 'desc' },
         skip,
         take: options.limit,
