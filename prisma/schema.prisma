@@ -11,6 +11,7 @@ model User {
   id           String        @id @default(uuid()) @db.Uuid
   email        String        @unique @db.VarChar(255)
   name         String?       @db.VarChar(100) // görünen ad; opsiyonel — admin panelinde email yerine gösterilir
+  phoneNumber  String?       @db.VarChar(32) // hesap iletişim numarası; self-register'da beyan edilir, opsiyonel
   password     String        @db.VarChar(512)
   role         Role
   projectId    String        @db.Uuid
@@ -31,6 +32,7 @@ model Project {
   id        String            @id @default(uuid()) @db.Uuid
   name      String            @db.VarChar(100)
   apiKey    String            @unique @default(uuid()) @db.Uuid
+  isDefault Boolean           @default(false) // self-register bu projeye bağlanır; en fazla bir tane (partial unique index)
   users     User[]
   otpLogs   OTPLog[]
   devices   Device[]
@@ -41,6 +43,12 @@ model Project {
 
   @@map("projects")
 }
+
+// NOT: self-register her yeni kullanıcıyı `isDefault: true` olan projeye bağlar. Aynı anda
+// yalnızca BİR varsayılan proje olmalı — bu, migration'a elle eklenen partial unique index ile
+// DB seviyesinde garanti edilir (schema.prisma'da ifade edilemez):
+//
+//   CREATE UNIQUE INDEX "projects_isDefault_key" ON "projects" ("isDefault") WHERE "isDefault" = true;
 
 model Device {
   id          String    @id @default(uuid()) @db.Uuid

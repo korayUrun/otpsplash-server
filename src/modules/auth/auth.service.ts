@@ -1,9 +1,10 @@
-import type { PrismaClient, User } from '@prisma/client';
+import { Role, type PrismaClient, type User } from '@prisma/client';
 import { AppError } from '@errors/AppError';
 import {
   AuthenticationError,
   ConflictError,
   NotFoundError,
+  ValidationError,
 } from '@errors/errors';
 import { ErrorCode } from '@errors/ErrorCode';
 import type { ILogger } from '@infrastructure/logger';
@@ -36,12 +37,25 @@ export class AuthService implements IAuthService {
 
   async register(dto: RegisterDTO): Promise<Result<AuthTokens>> {
     try {
-      const project = await this.prisma.project.findUnique({
-        where: { id: dto.projectId },
+      // ADMIN self-register edemez. Zod da reddeder; bu servis-katmanı savunmasıdır
+      // (RegisterDTO.role tip olarak hâlâ ADMIN'i taşıyabildiği için — çift katman).
+      if (dto.role === Role.ADMIN) {
+        return fail(
+          new ValidationError('Rol yalnızca RECEIVER veya DEVELOPER olabilir'),
+        );
+      }
+
+      // Kullanıcı proje seçmez/id girmez — backend varsayılan projeye bağlar.
+      // Varsayılan proje yoksa bu bir kurulum hatasıdır (seed/admin tanımlamalı).
+      const project = await this.prisma.project.findFirst({
+        where: { isDefault: true },
       });
       if (!project) {
         return fail(
-          new NotFoundError('Proje bulunamadı', ErrorCode.PROJECT_NOT_FOUND),
+          new NotFoundError(
+            'Kayıt için varsayılan proje tanımlı değil',
+            ErrorCode.PROJECT_NOT_FOUND,
+          ),
         );
       }
 
@@ -56,10 +70,11 @@ export class AuthService implements IAuthService {
       const user = await this.prisma.user.create({
         data: {
           email: dto.email,
-          name: dto.name ?? null,
+          name: dto.name,
+          phoneNumber: dto.phoneNumber ?? null,
           password: hashed,
           role: dto.role,
-          projectId: dto.projectId,
+          projectId: project.id,
         },
       });
 
@@ -150,6 +165,7 @@ export class AuthService implements IAuthService {
       id: user.id,
       email: user.email,
       name: user.name,
+      phoneNumber: user.phoneNumber,
       role: user.role,
       projectId: user.projectId,
       createdAt: user.createdAt,

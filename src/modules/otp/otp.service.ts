@@ -1,5 +1,4 @@
 import { CONSTANTS } from '@config/constants';
-import { env } from '@config/env';
 import { AppError } from '@errors/AppError';
 import { AuthorizationError, NotFoundError } from '@errors/errors';
 import { ErrorCode } from '@errors/ErrorCode';
@@ -65,8 +64,9 @@ export class OtpService implements IOtpService {
       const encryptedCode = this.encryptor.encrypt(dto.code);
 
       // 3) Kalıcılaştır (AWAIT). receiverId sahiplik kaynağıdır (deviceId'den bağımsız).
+      //    Geçerlilik 90 sn — mobil bu değere göre geri sayar (CLAUDE/PHASES madde 3).
       const expiresAt = new Date(
-        Date.now() + env.OTP_TTL_DAYS * CONSTANTS.TIME.DAY_MS,
+        Date.now() + CONSTANTS.OTP.TTL_SECONDS * CONSTANTS.TIME.SECOND_MS,
       );
       const saved = await this.repository.save({
         encryptedCode,

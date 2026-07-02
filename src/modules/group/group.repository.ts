@@ -47,4 +47,12 @@ export class PrismaGroupRepository implements IGroupRepository {
       where: { groupId_userId: { groupId, userId } },
     });
   }
+
+  /**
+   * Grubu siler. `group_members` ve `routing_rules` FK'leri `ON DELETE CASCADE` olduğundan
+   * üyelikler ve bu grubu hedefleyen kurallar DB tarafından otomatik temizlenir.
+   */
+  async delete(groupId: string): Promise<void> {
+    await this.prisma.group.delete({ where: { id: groupId } });
+  }
 }

@@ -17,14 +17,15 @@ afterAll(() => {
 const RANDOM_UUID = '99999999-9999-9999-9999-999999999999';
 
 describe('POST /api/auth/register', () => {
-  it('201 — geçerli kayıt token ve kullanıcı döner', async () => {
-    const project = await createTestProject();
+  it('201 — self-register kullanıcıyı varsayılan projeye bağlar', async () => {
+    const project = await createTestProject('Default', true);
 
     const res = await request(app).post('/api/auth/register').send({
       email: 'new@test.com',
       password: DEFAULT_PASSWORD,
+      name: 'Yeni Kullanıcı',
+      phoneNumber: '+905551112233',
       role: Role.DEVELOPER,
-      projectId: project.id,
     });
 
     expect(res.status).toBe(201);
@@ -32,23 +33,42 @@ describe('POST /api/auth/register', () => {
     expect(res.body.data.accessToken).toEqual(expect.any(String));
     expect(res.body.data.refreshToken).toEqual(expect.any(String));
     expect(res.body.data.user.email).toBe('new@test.com');
+    expect(res.body.data.user.name).toBe('Yeni Kullanıcı');
+    expect(res.body.data.user.phoneNumber).toBe('+905551112233');
+    // projectId body'de gönderilmedi; backend varsayılan projeye bağladı.
+    expect(res.body.data.user.projectId).toBe(project.id);
     expect(res.body.data.user).not.toHaveProperty('password');
     expect(res.body.requestId).toEqual(expect.any(String));
 
     // DB'de parola düz metin değil, argon2id hash olarak saklanır.
     const stored = await prisma.user.findUnique({ where: { email: 'new@test.com' } });
+    expect(stored?.projectId).toBe(project.id);
     expect(stored?.password).not.toBe(DEFAULT_PASSWORD);
     expect(stored?.password.startsWith('$argon2id$')).toBe(true);
   });
 
+  it('201 — phoneNumber opsiyonel (verilmezse null)', async () => {
+    await createTestProject('Default', true);
+
+    const res = await request(app).post('/api/auth/register').send({
+      email: 'nophone@test.com',
+      password: DEFAULT_PASSWORD,
+      name: 'Telefonsuz',
+      role: Role.RECEIVER,
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.user.phoneNumber).toBeNull();
+  });
+
   it('400 — zayıf şifre (VALIDATION_ERROR)', async () => {
-    const project = await createTestProject();
+    await createTestProject('Default', true);
 
     const res = await request(app).post('/api/auth/register').send({
       email: 'weak@test.com',
       password: 'weak',
+      name: 'Zayıf',
       role: Role.DEVELOPER,
-      projectId: project.id,
     });
 
     expect(res.status).toBe(400);
@@ -56,12 +76,42 @@ describe('POST /api/auth/register', () => {
     expect(res.body.requestId).toEqual(expect.any(String));
   });
 
-  it('404 — proje yok (PROJECT_NOT_FOUND)', async () => {
+  it('400 — isim eksik (VALIDATION_ERROR)', async () => {
+    await createTestProject('Default', true);
+
     const res = await request(app).post('/api/auth/register').send({
-      email: 'noproject@test.com',
+      email: 'noname@test.com',
       password: DEFAULT_PASSWORD,
       role: Role.DEVELOPER,
-      projectId: RANDOM_UUID,
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('400 — ADMIN rolüyle kayıt reddedilir (VALIDATION_ERROR)', async () => {
+    await createTestProject('Default', true);
+
+    const res = await request(app).post('/api/auth/register').send({
+      email: 'admin-signup@test.com',
+      password: DEFAULT_PASSWORD,
+      name: 'Sahte Admin',
+      role: Role.ADMIN,
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('404 — varsayılan proje tanımlı değilse (PROJECT_NOT_FOUND)', async () => {
+    // Proje var ama hiçbiri isDefault değil → self-register bağlanacak proje bulamaz.
+    await createTestProject('Non-default', false);
+
+    const res = await request(app).post('/api/auth/register').send({
+      email: 'nodefault@test.com',
+      password: DEFAULT_PASSWORD,
+      name: 'Varsayılansız',
+      role: Role.DEVELOPER,
     });
 
     expect(res.status).toBe(404);
@@ -69,14 +119,14 @@ describe('POST /api/auth/register', () => {
   });
 
   it('409 — e-posta çakışması (CONFLICT)', async () => {
-    const project = await createTestProject();
+    const project = await createTestProject('Default', true);
     await createTestUser({ projectId: project.id, email: 'dup@test.com' });
 
     const res = await request(app).post('/api/auth/register').send({
       email: 'dup@test.com',
       password: DEFAULT_PASSWORD,
+      name: 'Kopya',
       role: Role.DEVELOPER,
-      projectId: project.id,
     });
 
     expect(res.status).toBe(409);

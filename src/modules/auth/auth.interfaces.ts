@@ -4,14 +4,19 @@ import type { JwtPayload, RefreshPayload } from '@app-types/index';
 
 // ───────────────────────── DTO'lar ─────────────────────────
 
-/** Kayıt isteği gövdesi. */
+/**
+ * Kayıt isteği gövdesi.
+ * `projectId` YOKTUR — backend kullanıcıyı varsayılan projeye (`Project.isDefault`) bağlar.
+ * `role` yalnızca RECEIVER/DEVELOPER olabilir (ADMIN Zod'da ve service'te reddedilir).
+ */
 export interface RegisterDTO {
   email: string;
-  /** Görünen ad; opsiyonel. Verilmezse `null` kaydedilir. */
-  name?: string;
+  /** Görünen ad — zorunlu. */
+  name: string;
+  /** Hesap iletişim numarası; opsiyonel, verilmezse `null` kaydedilir. */
+  phoneNumber?: string;
   password: string;
   role: Role;
-  projectId: string;
 }
 
 /** Giriş isteği gövdesi. */
@@ -31,6 +36,8 @@ export interface SafeUser {
   email: string;
   /** Görünen ad; opsiyonel. Mobil `name ?? email` fallback yapar. */
   name: string | null;
+  /** Hesap iletişim numarası; beyan edilmemişse null. */
+  phoneNumber: string | null;
   role: Role;
   projectId: string;
   createdAt: Date;

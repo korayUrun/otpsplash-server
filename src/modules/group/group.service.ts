@@ -11,6 +11,7 @@ import { type Result, ok, fail } from '@app-types/Result';
 import type {
   AddMemberDTO,
   CreateGroupDTO,
+  DeleteGroupDTO,
   GroupMutationResult,
   GroupView,
   IGroupRepository,
@@ -111,6 +112,28 @@ export class GroupService implements IGroupService {
         'gruptan üye çıkarıldı',
       );
       return ok({ message: 'Üye gruptan çıkarıldı' });
+    } catch (error) {
+      return this.toResult(error);
+    }
+  }
+
+  async delete(dto: DeleteGroupDTO): Promise<Result<GroupMutationResult>> {
+    try {
+      // Grup admin'in projesinde mi? (yoksa/başka projede → 404, sızdırma yok)
+      const group = await this.repository.findById(dto.groupId);
+      if (!group || group.projectId !== dto.projectId) {
+        return fail(
+          new NotFoundError('Grup bulunamadı', ErrorCode.GROUP_NOT_FOUND),
+        );
+      }
+
+      // Silme: FK cascade üyelikleri ve bu grubu hedefleyen kuralları da temizler.
+      await this.repository.delete(dto.groupId);
+      this.logger.info(
+        { groupId: dto.groupId, projectId: dto.projectId },
+        'grup silindi (üyelikler ve hedef kurallar cascade ile temizlendi)',
+      );
+      return ok({ message: 'Grup silindi' });
     } catch (error) {
       return this.toResult(error);
     }

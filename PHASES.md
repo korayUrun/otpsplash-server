@@ -14,6 +14,7 @@
 [x] FAZ 6 — Device Authentication         (commit edildi)
 [x] FAZ 7 — Gruplar ve Yönlendirme        (commit edildi — 5f00276)
 [x] FAZ 8 — Servis Tespiti ve Kayıt Defteri (commit edildi — aef3c34)
+[x] Fiziksel Cihaz Testi Düzeltmeleri (madde 3/6/11) — aşağıdaki bölüme bak
 ```
 
 > **FAZ 8 — tamamlandı ve commit edildi (aef3c34):** service-registry modülü (resolver
@@ -567,6 +568,47 @@ eklemekle mümkün olmasını sağlar.
 - Tanınmayan senderRaw → OTPLog.serviceId null, kimseye gitmiyor, ServiceRegistry'de kova satırı oluşuyor
 - Aynı tanınmayan senderRaw tekrar gelirse → ServiceRegistry'de yeni satır değil, mevcut satırın sayacı artıyor
 - senderRaw eksikse → 400 VALIDATION_ERROR (artık zorunlu alan)
+
+---
+
+## Fiziksel Cihaz Testi Düzeltmeleri (FAZ 8 Sonrası)
+
+**Hedef:** Fiziksel telefon (Android/iOS) testinde ortaya çıkan eksiklerin giderilmesi.
+Mimari kararlar CLAUDE.md'ye işlendi (Self-Register / OTP TTL / Receiver Rol Kapsamı blokları).
+
+**Yapılanlar:**
+
+- **madde 3 — OTP geçerlilik süresi 90 sn.** `expiresAt = createdAt + 90 sn`, artık
+  `CONSTANTS.OTP.TTL_SECONDS` sabitinden hesaplanır. `OTP_TTL_DAYS` env değişkeni tüm kod
+  tabanından ve `.env*` dosyalarından kaldırıldı. Mobil zaten `expiresAt`'e göre geri sayıyor.
+
+- **madde 6 — `DELETE /api/groups/:id`.** ADMIN kendi projesindeki grubu siler; başka
+  proje/olmayan grup → 404 GROUP_NOT_FOUND. Üyelikler ve o grubu hedefleyen routing kuralları
+  DB seviyesinde `ON DELETE CASCADE` ile temizlenir — dangling kural kalmaz (cascade testiyle
+  doğrulandı). group modülüne `delete` (interface/repo/service/controller/route) eklendi.
+
+- **madde 11 — Self-register uyarlandı.** `POST /api/auth/register` body'sinden `projectId`
+  KALDIRILDI; kullanıcı varsayılan projeye (`Project.isDefault`) bağlanır. `name` zorunlu,
+  `phoneNumber` opsiyonel eklendi (`User.phoneNumber`). Rol yalnızca RECEIVER/DEVELOPER —
+  ADMIN reddedilir (400). Varsayılan proje yoksa 404. Migration `add_register_fields`
+  (`User.phoneNumber`, `Project.isDefault` + partial unique index `projects_isDefault_key`).
+  Seed demo projeyi varsayılan işaretler.
+
+- **madde 8 — senderRaw/serviceName (zaten kodluydu, doğrulandı).** Socket payload'ı
+  (`OtpNotification`), developer history ve receiver history üçü de `serviceName` + `senderRaw`
+  taşıyor; entegrasyon testleri assert ediyor. Kod tarafında ek değişiklik gerekmedi.
+
+- **madde 2 — iOS canlı akış: EKLENMEDİ (karar).** Receiver'ın tek işlevi kayıt + SMS akışını
+  başlatmak; cihazda canlı OTP feed'i yok. Bu yüzden receiver'ın kendi odasına emit eklenmedi
+  (CLAUDE.md "Receiver Rol Kapsamı — iOS Canlı Emit Yok").
+
+**Tamamlanma Kriterleri:**
+- [x] OTP `expiresAt` = createdAt + 90 sn; `OTP_TTL_DAYS` hiçbir yerde yok
+- [x] `DELETE /api/groups/:id` → 200 (ADMIN), 403 (diğer rol), 404 (başka proje/olmayan)
+- [x] Grup silinince üyelik + hedef routing kuralları cascade ile siliniyor
+- [x] register body'sinde `projectId` yok; varsayılan projeye bağlanıyor
+- [x] register ADMIN rolünü reddediyor (400); `name` zorunlu, `phoneNumber` opsiyonel
+- [x] `npm run typecheck` temiz, `npm test` (213 test) geçiyor
 
 ---
 

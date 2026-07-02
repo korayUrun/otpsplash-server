@@ -14,7 +14,6 @@ import {
 } from '@prisma/client';
 import { prisma } from '@config/prisma';
 import { CONSTANTS } from '@config/constants';
-import { env } from '@config/env';
 import { Argon2PasswordService } from '@modules/auth/password.service';
 import { SecretService } from '@modules/device/secret.service';
 import { AesGcmOtpEncryptor } from '@modules/otp/otp.encryptor';
@@ -26,9 +25,15 @@ const otpEncryptor = new AesGcmOtpEncryptor();
 /** Varsayılan güçlü test parolası (politikayı karşılar). */
 export const DEFAULT_PASSWORD = 'Password123';
 
-/** Test projesi oluşturur. */
-export async function createTestProject(name = 'Test Project'): Promise<Project> {
-  return prisma.project.create({ data: { name } });
+/**
+ * Test projesi oluşturur. `isDefault: true` verilirse self-register'ın bağlanacağı
+ * varsayılan projeyi işaretler (setup her testte projeleri sildiğinden tekil kalır).
+ */
+export async function createTestProject(
+  name = 'Test Project',
+  isDefault = false,
+): Promise<Project> {
+  return prisma.project.create({ data: { name, isDefault } });
 }
 
 interface CreateUserOptions {
@@ -112,9 +117,10 @@ export async function createTestOtpLog(
   opts: CreateOtpLogOptions,
 ): Promise<{ otpLog: OTPLog; code: string }> {
   const code = opts.code ?? '123456';
+  // Fixture varsayılanı üretim TTL'inden (90 sn) bağımsız, testler için geniş (1 gün);
+  // süresi dolmuş kayıt senaryoları expiresAt override'ı ile kurulur.
   const expiresAt =
-    opts.expiresAt ??
-    new Date(Date.now() + env.OTP_TTL_DAYS * CONSTANTS.TIME.DAY_MS);
+    opts.expiresAt ?? new Date(Date.now() + CONSTANTS.TIME.DAY_MS);
 
   const receiverId = opts.receiverId ?? (await createPlaceholderReceiver(opts.projectId));
 

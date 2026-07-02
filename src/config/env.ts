@@ -40,7 +40,6 @@ const envSchema = z
         /^[0-9a-fA-F]{64}$/,
         'OTP_ENCRYPTION_KEY 64 hex karakter (32 byte) olmalı',
       ),
-    OTP_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
     DEVICE_SECRET_BYTES: z.coerce.number().int().positive().default(32),
 

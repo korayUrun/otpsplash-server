@@ -243,6 +243,29 @@ action'ı idempotent olmalıdır (zaten kaldırılmış veya hiç var olmayan bi
 no-op olmalı, hata fırlatmamalı). Bu, ileride oda stratejisi değişirse veya ağ katmanında
 event tekrarı olursa savunma sağlar — tek katmanlı korumaya güvenilmez.
 
+### Self-Register Mimari Kararı (Fiziksel Cihaz Testi Sonrası)
+`POST /api/auth/register` kullanıcıdan `projectId` ALMAZ. Bir kullanıcı proje seçmek/id
+girmek zorunda kalmamalı (küçük iç QA aracında kötü UX), ama `User.projectId` non-null bir
+FK'dir ve tüm izolasyon buna dayanır — yani "proje yok" bir seçenek değil. Çözüm: backend
+yeni kullanıcıyı **`Project.isDefault: true` olan tek varsayılan projeye** bağlar. Aynı anda
+en fazla bir varsayılan proje olması migration'daki partial unique index (`projects_isDefault_key`)
+ile DB seviyesinde garanti edilir; seed demo projeyi varsayılan işaretler. Rol yalnızca
+RECEIVER/DEVELOPER olabilir — **ADMIN self-register edemez** (Zod refine + service guard, çift
+katman). Varsayılan proje tanımlı değilse kayıt 404 PROJECT_NOT_FOUND döner (kurulum hatası).
+
+### OTP Geçerlilik Süresi — Sabit 90 sn (env değil)
+OTP `expiresAt = createdAt + 90 sn`, `CONSTANTS.OTP.TTL_SECONDS` sabitinden hesaplanır —
+env ile değiştirilemez (`OTP_TTL_DAYS` kaldırıldı). Mobil bu değere göre geri sayar. 90 sn
+dolunca kod developer canlı feed'inden (`findByProject` filtresi `expiresAt > now`) düşer,
+ama receiver kendi geçmişinde görmeye devam eder (`findByReceiver`'da expiry filtresi yok).
+Cleanup cron süresi geçmiş satırları yine günde bir siler.
+
+### Receiver Rol Kapsamı — iOS Canlı Emit Yok
+Receiver uygulamasının tek işlevi kayıt olup SMS akışını başlatmaktır; cihazda canlı OTP
+feed'i görüntülemez. Bu yüzden receiver'ın kendi odasına `otp:received` emit'i **bilinçli
+olarak eklenmedi** (iOS canlı akış reddedildi). Receiver hiçbir Socket.IO odasına katılmaz —
+`otp:received`/`otp:revoked` yalnızca routing hedefi developer'lara gider (FAZ 7 davranışı korunur).
+
 ---
 
 ## Klasör Yapısı
@@ -365,6 +388,7 @@ model User {
   id            String         @id @default(uuid()) @db.Uuid
   email         String         @unique @db.VarChar(255)
   name          String?        @db.VarChar(100)   // görünen ad; opsiyonel — admin panelinde email yerine gösterilir, mobil name ?? email fallback yapar
+  phoneNumber   String?        @db.VarChar(32)    // hesap iletişim numarası; self-register'da beyan edilir, opsiyonel
   password      String         @db.VarChar(512)
   role          Role
   projectId     String         @db.Uuid
@@ -384,6 +408,7 @@ model Project {
   id        String          @id @default(uuid()) @db.Uuid
   name      String          @db.VarChar(100)
   apiKey    String          @unique @default(uuid()) @db.Uuid
+  isDefault Boolean         @default(false)   // self-register bu projeye bağlanır; en fazla BİR tane (migration'da partial unique index: projects_isDefault_key)
   users     User[]
   otpLogs   OTPLog[]
   devices   Device[]
@@ -539,10 +564,13 @@ Paginated: { success: true,  data: T[], pagination: {...},   requestId: string }
 
 ### Endpointler
 ```
-POST /api/auth/register       → Body: { email, password, role, projectId, name? }
+POST /api/auth/register       → Body: { email, password, name, phoneNumber?, role }
+                                  role: RECEIVER | DEVELOPER — ADMIN reddedilir (400 VALIDATION_ERROR, backend zorlar)
+                                  projectId YOK — backend kullanıcıyı varsayılan projeye (Project.isDefault) bağlar
+                                  (self-register proje seçmez/id girmez; varsayılan proje yoksa 404 PROJECT_NOT_FOUND)
                                 → 201 { accessToken, refreshToken, user }
-                                  (user görünümü + proje/grup/paylaşım üye listeleri opsiyonel `name` taşır;
-                                   verilmezse null — mobil `name ?? email` fallback yapar)
+                                  user: { id, email, name, phoneNumber, role, projectId, createdAt } — parola yok;
+                                  name/phoneNumber verilmezse null (mobil `name ?? email` fallback yapar; name kayıtta zorunlu)
 POST /api/auth/login          → 200 { accessToken, refreshToken, user }
 POST /api/auth/refresh        → 200 { accessToken }
 POST /api/auth/logout         → 200 { message }
@@ -564,6 +592,8 @@ DELETE /api/projects/:id/users/:uid→ 200                       [JWT — ADMIN]
 
 POST   /api/groups                 → 201 Group                 [JWT — ADMIN]
 GET    /api/groups                 → 200 Group[] (proje bazlı) [JWT — herkes, sadece görüntüleme]
+DELETE /api/groups/:id             → 200 { message }           [JWT — ADMIN, sahibi proje]
+                                     (FK cascade: üyelikler + o grubu hedefleyen routing kuralları da silinir — dangling kalmaz)
 POST   /api/groups/:id/members     → 200                       [JWT — ADMIN]
 DELETE /api/groups/:id/members/:uid→ 200                       [JWT — ADMIN]
 
@@ -620,7 +650,7 @@ JWT_REFRESH_SECRET=         # min 32 karakter, ACCESS'ten FARKLI
 JWT_ACCESS_EXPIRES=15m
 JWT_REFRESH_EXPIRES=30d
 OTP_ENCRYPTION_KEY=         # 64 hex karakter (32 byte)
-OTP_TTL_DAYS=7
+# OTP geçerlilik süresi artık env DEĞİL — sabit 90 sn (CONSTANTS.OTP.TTL_SECONDS). OTP_TTL_DAYS kaldırıldı.
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
 DEVICE_SECRET_BYTES=32      # 256-bit
