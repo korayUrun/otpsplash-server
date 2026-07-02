@@ -1,11 +1,10 @@
 import request from 'supertest';
-import { Role, RoutingTarget, type ServiceRegistry } from '@prisma/client';
+import { Role, RoutingTarget } from '@prisma/client';
 import { prisma } from '@config/prisma';
 import { createApp } from '../../src/app';
 import {
   createTestGroup,
   createTestRoutingRule,
-  createTestService,
   createTestUser,
 } from '../helpers/fixtures';
 import {
@@ -20,16 +19,13 @@ afterAll(() => {
   io.close();
 });
 
-const RANDOM_UUID = '99999999-9999-9999-9999-999999999999';
-
 interface Scenario {
   admin: AuthContext;
   receiverId: string;
   developerId: string;
-  service: ServiceRegistry;
 }
 
-/** Admin'in projesinde receiver + developer + servis kuran ortak senaryo. */
+/** Admin'in projesinde receiver + developer kuran ortak senaryo. */
 async function setupScenario(): Promise<Scenario> {
   const admin = await getAdminToken();
   const { user: receiver } = await createTestUser({
@@ -40,17 +36,15 @@ async function setupScenario(): Promise<Scenario> {
     projectId: admin.project.id,
     role: Role.DEVELOPER,
   });
-  const service = await createTestService({ projectId: admin.project.id });
   return {
     admin,
     receiverId: receiver.id,
     developerId: developer.id,
-    service,
   };
 }
 
 describe('POST /api/routing-rules', () => {
-  it('201 — ADMIN (receiver, servis) → developer kuralı oluşturur', async () => {
+  it('201 — ADMIN receiver → developer kuralı oluşturur', async () => {
     const s = await setupScenario();
 
     const res = await request(app)
@@ -58,7 +52,6 @@ describe('POST /api/routing-rules', () => {
       .set('Authorization', `Bearer ${s.admin.accessToken}`)
       .send({
         receiverId: s.receiverId,
-        serviceId: s.service.id,
         targetType: RoutingTarget.DEVELOPER,
         developerId: s.developerId,
       });
@@ -68,7 +61,7 @@ describe('POST /api/routing-rules', () => {
     expect(res.body.data.targetType).toBe(RoutingTarget.DEVELOPER);
   });
 
-  it('201 — (receiver, servis) → grup kuralı oluşturur', async () => {
+  it('201 — receiver → grup kuralı oluşturur', async () => {
     const s = await setupScenario();
     const group = await createTestGroup({ projectId: s.admin.project.id });
 
@@ -77,7 +70,6 @@ describe('POST /api/routing-rules', () => {
       .set('Authorization', `Bearer ${s.admin.accessToken}`)
       .send({
         receiverId: s.receiverId,
-        serviceId: s.service.id,
         targetType: RoutingTarget.GROUP,
         groupId: group.id,
       });
@@ -86,7 +78,7 @@ describe('POST /api/routing-rules', () => {
     expect(res.body.data.targetType).toBe(RoutingTarget.GROUP);
   });
 
-  it('201 — aynı (receiver, servis) hem developer hem gruba aynı anda bağlanabilir', async () => {
+  it('201 — aynı receiver hem developer hem gruba aynı anda bağlanabilir', async () => {
     const s = await setupScenario();
     const group = await createTestGroup({ projectId: s.admin.project.id });
 
@@ -95,7 +87,6 @@ describe('POST /api/routing-rules', () => {
       .set('Authorization', `Bearer ${s.admin.accessToken}`)
       .send({
         receiverId: s.receiverId,
-        serviceId: s.service.id,
         targetType: RoutingTarget.DEVELOPER,
         developerId: s.developerId,
       });
@@ -104,7 +95,6 @@ describe('POST /api/routing-rules', () => {
       .set('Authorization', `Bearer ${s.admin.accessToken}`)
       .send({
         receiverId: s.receiverId,
-        serviceId: s.service.id,
         targetType: RoutingTarget.GROUP,
         groupId: group.id,
       });
@@ -113,7 +103,7 @@ describe('POST /api/routing-rules', () => {
     expect(devRes.status).toBe(201);
     expect(groupRes.status).toBe(201);
     const count = await prisma.routingRule.count({
-      where: { receiverId: s.receiverId, serviceId: s.service.id },
+      where: { receiverId: s.receiverId },
     });
     expect(count).toBe(2);
   });
@@ -127,7 +117,6 @@ describe('POST /api/routing-rules', () => {
       .set('Authorization', `Bearer ${s.admin.accessToken}`)
       .send({
         receiverId: s.developerId,
-        serviceId: s.service.id,
         targetType: RoutingTarget.DEVELOPER,
         developerId: s.developerId,
       });
@@ -144,7 +133,6 @@ describe('POST /api/routing-rules', () => {
       .set('Authorization', `Bearer ${s.admin.accessToken}`)
       .send({
         receiverId: s.receiverId,
-        serviceId: s.service.id,
         targetType: RoutingTarget.DEVELOPER,
       });
 
@@ -152,28 +140,10 @@ describe('POST /api/routing-rules', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
-  it('404 — olmayan servis (SERVICE_NOT_FOUND)', async () => {
-    const s = await setupScenario();
-
-    const res = await request(app)
-      .post('/api/routing-rules')
-      .set('Authorization', `Bearer ${s.admin.accessToken}`)
-      .send({
-        receiverId: s.receiverId,
-        serviceId: RANDOM_UUID,
-        targetType: RoutingTarget.DEVELOPER,
-        developerId: s.developerId,
-      });
-
-    expect(res.status).toBe(404);
-    expect(res.body.error.code).toBe('SERVICE_NOT_FOUND');
-  });
-
-  it('409 — aynı (receiver, servis, developer) tekrar (servis katmanı)', async () => {
+  it('409 — aynı (receiver, developer) tekrar (servis katmanı)', async () => {
     const s = await setupScenario();
     const body = {
       receiverId: s.receiverId,
-      serviceId: s.service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: s.developerId,
     };
@@ -201,7 +171,6 @@ describe('POST /api/routing-rules', () => {
       .set('Authorization', `Bearer ${accessToken}`)
       .send({
         receiverId: s.receiverId,
-        serviceId: s.service.id,
         targetType: RoutingTarget.DEVELOPER,
         developerId: s.developerId,
       });
@@ -216,16 +185,14 @@ describe('Partial unique index (DB seviyesi koruma)', () => {
 
     await createTestRoutingRule({
       receiverId: s.receiverId,
-      serviceId: s.service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: s.developerId,
     });
 
-    // Aynı (receiver, servis, developer) → routing_rule_developer_unique ihlali (P2002).
+    // Aynı (receiver, developer) → routing_rule_developer_unique ihlali (P2002).
     await expect(
       createTestRoutingRule({
         receiverId: s.receiverId,
-        serviceId: s.service.id,
         targetType: RoutingTarget.DEVELOPER,
         developerId: s.developerId,
       }),
@@ -238,7 +205,6 @@ describe('PATCH /api/routing-rules/:id', () => {
     const s = await setupScenario();
     const rule = await createTestRoutingRule({
       receiverId: s.receiverId,
-      serviceId: s.service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: s.developerId,
     });
@@ -258,7 +224,6 @@ describe('PATCH /api/routing-rules/:id', () => {
     const s = await setupScenario();
     const rule = await createTestRoutingRule({
       receiverId: s.receiverId,
-      serviceId: s.service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: s.developerId,
     });
@@ -279,7 +244,6 @@ describe('DELETE /api/routing-rules/:id', () => {
     const s = await setupScenario();
     const rule = await createTestRoutingRule({
       receiverId: s.receiverId,
-      serviceId: s.service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: s.developerId,
     });
@@ -299,7 +263,6 @@ describe('GET /api/routing-rules', () => {
     const s = await setupScenario();
     await createTestRoutingRule({
       receiverId: s.receiverId,
-      serviceId: s.service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: s.developerId,
     });

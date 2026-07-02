@@ -10,10 +10,6 @@ import { deviceAuth } from '@middleware/deviceAuth';
 import { otpRateLimit } from '@middleware/rateLimiter';
 import { validate } from '@middleware/validate';
 import { routingResolver } from '@modules/routing/routing.routes';
-import {
-  serviceRegistryService,
-  serviceResolver,
-} from '@modules/service-registry/registry.routes';
 import { OtpController } from './otp.controller';
 import { AesGcmOtpEncryptor } from './otp.encryptor';
 import { PrismaOtpRepository } from './otp.repository';
@@ -27,7 +23,7 @@ import {
 
 // ── Modül kompozisyon kökü ──
 // Concrete bağımlılıklar burada kurulur; service interface'lere bağlıdır (DIP).
-// FAZ 8: parser kaldırıldı (kod cihazda parse edilir); servis çözümleyici + kova kaydedici eklendi.
+// Parse cihazda yapılır (parser yok); dağıtım receiver bazlı routing resolver ile çözülür.
 const encryptor = new AesGcmOtpEncryptor();
 const repository = new PrismaOtpRepository(prisma);
 const otpService = new OtpService(
@@ -35,8 +31,6 @@ const otpService = new OtpService(
   repository,
   socketNotifier,
   routingResolver,
-  serviceResolver,
-  serviceRegistryService,
   logger,
 );
 const controller = new OtpController(otpService);

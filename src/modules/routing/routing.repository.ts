@@ -3,7 +3,6 @@ import {
   type Group,
   type PrismaClient,
   type RoutingRule,
-  type ServiceRegistry,
   type User,
 } from '@prisma/client';
 import type {
@@ -31,7 +30,7 @@ export class PrismaRoutingRepository implements IRoutingRepository {
   async listByProject(projectId: string): Promise<RoutingRuleWithRelations[]> {
     return this.prisma.routingRule.findMany({
       where: { receiver: { projectId } },
-      include: { receiver: true, service: true, group: true },
+      include: { receiver: true, group: true },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -39,20 +38,18 @@ export class PrismaRoutingRepository implements IRoutingRepository {
   async listByReceiver(receiverId: string): Promise<RoutingRuleWithRelations[]> {
     return this.prisma.routingRule.findMany({
       where: { receiverId },
-      include: { receiver: true, service: true, group: true },
+      include: { receiver: true, group: true },
       orderBy: { createdAt: 'desc' },
     });
   }
 
   async findDeveloperRule(
     receiverId: string,
-    serviceId: string,
     developerId: string,
   ): Promise<RoutingRule | null> {
     return this.prisma.routingRule.findFirst({
       where: {
         receiverId,
-        serviceId,
         targetType: RoutingTarget.DEVELOPER,
         developerId,
       },
@@ -61,13 +58,11 @@ export class PrismaRoutingRepository implements IRoutingRepository {
 
   async findGroupRule(
     receiverId: string,
-    serviceId: string,
     groupId: string,
   ): Promise<RoutingRule | null> {
     return this.prisma.routingRule.findFirst({
       where: {
         receiverId,
-        serviceId,
         targetType: RoutingTarget.GROUP,
         groupId,
       },
@@ -80,14 +75,36 @@ export class PrismaRoutingRepository implements IRoutingRepository {
    */
   async findActiveTargets(
     receiverId: string,
-    serviceId: string,
   ): Promise<RoutingRuleWithTargets[]> {
     return this.prisma.routingRule.findMany({
-      where: { receiverId, serviceId, isActive: true },
+      where: { receiverId, isActive: true },
       include: {
         group: { include: { members: { include: { user: true } } } },
       },
     });
+  }
+
+  /**
+   * `findActiveTargets`'in TERSİ: developer'a doğrudan (`developerId`) VEYA üye olduğu bir
+   * grup üzerinden (`group.members.some`) yönlendirilen AKTİF kuralların benzersiz `receiverId`
+   * listesini döner. Grup üyeliği DB'de `some` ile çözülür — bellekte flatten gerekmez.
+   */
+  async findReceiverIdsForDeveloper(developerId: string): Promise<string[]> {
+    const rules = await this.prisma.routingRule.findMany({
+      where: {
+        isActive: true,
+        OR: [
+          { targetType: RoutingTarget.DEVELOPER, developerId },
+          {
+            targetType: RoutingTarget.GROUP,
+            group: { members: { some: { userId: developerId } } },
+          },
+        ],
+      },
+      select: { receiverId: true },
+      distinct: ['receiverId'],
+    });
+    return rules.map((rule) => rule.receiverId);
   }
 
   async toggle(id: string, isActive: boolean): Promise<RoutingRule> {
@@ -110,10 +127,6 @@ export class PrismaRoutingRepository implements IRoutingRepository {
       return [];
     }
     return this.prisma.user.findMany({ where: { id: { in: ids } } });
-  }
-
-  async findServiceById(serviceId: string): Promise<ServiceRegistry | null> {
-    return this.prisma.serviceRegistry.findUnique({ where: { id: serviceId } });
   }
 
   async findGroupById(groupId: string): Promise<Group | null> {

@@ -22,6 +22,8 @@ export const CONSTANTS = {
     ALGORITHM: 'aes-256-gcm',
     /** Şifreli kayıt bileşen ayıracı: base64(iv):base64(authTag):base64(ciphertext). */
     SEPARATOR: ':',
+    /** senderRaw etiketinin üst sınırı (karakter) — DB otp_logs.senderRaw VarChar(255) ile hizalı. */
+    SENDER_MAX_LENGTH: 255,
   },
   ARGON2: {
     /** OWASP 2024 önerisi — argon2id. */
@@ -67,17 +69,6 @@ export const CONSTANTS = {
     NAME_MAX_LENGTH: 100,
     /** Telefon numarası üst sınırı — DB şemasındaki VarChar(32) ile hizalı. */
     PHONE_MAX_LENGTH: 32,
-  },
-  REGISTRY: {
-    /**
-     * senderPattern/keywordPattern üst sınırı (karakter). ReDoS koruması: kısa pattern,
-     * catastrophic backtracking yüzeyini küçültür (CLAUDE.md "senderPattern — ReDoS Koruması").
-     */
-    PATTERN_MAX_LENGTH: 200,
-    /** Servis adı üst sınırı — DB şemasındaki VarChar(100) ile hizalı. */
-    NAME_MAX_LENGTH: 100,
-    /** senderRaw/serviceHint sinyallerinin üst sınırı (DB lastSeenSender VarChar(255)). */
-    SIGNAL_MAX_LENGTH: 255,
   },
   TIME: {
     /** Bir saniyenin milisaniye karşılığı (OTP TTL hesabı). */

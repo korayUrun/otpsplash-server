@@ -3,7 +3,6 @@ import type {
   GroupMember,
   RoutingRule,
   RoutingTarget,
-  ServiceRegistry,
   User,
 } from '@prisma/client';
 import type { Result } from '@app-types/Result';
@@ -13,11 +12,11 @@ import type { Result } from '@app-types/Result';
 /**
  * `POST /api/routing-rules` iş katmanı girişi.
  * `projectId` body'den değil kimliği doğrulanmış admin'den (`req.user`) gelir —
- * receiver/servis/hedef bu projeye ait olmak zorundadır (proje izolasyonu).
+ * receiver/hedef bu projeye ait olmak zorundadır (proje izolasyonu).
+ * Servis kavramı yoktur: kural yalnızca receiver → hedef ikilisidir.
  */
 export interface CreateRoutingRuleDTO {
   receiverId: string;
-  serviceId: string;
   targetType: RoutingTarget;
   developerId?: string;
   groupId?: string;
@@ -27,7 +26,6 @@ export interface CreateRoutingRuleDTO {
 /** Repository'ye kural oluşturmak için verilen alanlar (id/createdAt DB üretir). */
 export interface CreateRoutingRuleData {
   receiverId: string;
-  serviceId: string;
   targetType: RoutingTarget;
   developerId: string | null;
   groupId: string | null;
@@ -51,8 +49,6 @@ export interface RoutingRuleView {
   id: string;
   receiverId: string;
   receiverEmail: string;
-  serviceId: string;
-  serviceName: string | null;
   targetType: RoutingTarget;
   developerId: string | null;
   developerEmail: string | null;
@@ -67,7 +63,7 @@ export interface RoutingMutationResult {
   message: string;
 }
 
-/** Bir OTP'nin/servisin hedef developer'ı (salt-okunur paylaşım görünümü + emit). */
+/** Bir receiver'ın hedef developer'ı (salt-okunur paylaşım görünümü + emit). */
 export interface TargetUser {
   id: string;
   email: string;
@@ -84,10 +80,9 @@ export type RoutingRuleWithTargets = RoutingRule & {
   group: (Group & { members: (GroupMember & { user: User })[] }) | null;
 };
 
-/** Admin/receiver listesi için: kural + receiver/servis/grup join'li hali (developer ayrı çekilir). */
+/** Admin/receiver listesi için: kural + receiver/grup join'li hali (developer ayrı çekilir). */
 export type RoutingRuleWithRelations = RoutingRule & {
   receiver: User;
-  service: ServiceRegistry;
   group: Group | null;
 };
 
@@ -105,23 +100,24 @@ export interface IRoutingRepository {
   listByProject(projectId: string): Promise<RoutingRuleWithRelations[]>;
   /** Bir receiver'ın kurallarını ilişkileriyle döner (salt-okunur görünüm). */
   listByReceiver(receiverId: string): Promise<RoutingRuleWithRelations[]>;
-  /** Aynı (receiver, servis, developer) kuralı var mı (servis katmanı conflict kontrolü). */
+  /** Aynı (receiver, developer) kuralı var mı (servis katmanı conflict kontrolü). */
   findDeveloperRule(
     receiverId: string,
-    serviceId: string,
     developerId: string,
   ): Promise<RoutingRule | null>;
-  /** Aynı (receiver, servis, grup) kuralı var mı (servis katmanı conflict kontrolü). */
+  /** Aynı (receiver, grup) kuralı var mı (servis katmanı conflict kontrolü). */
   findGroupRule(
     receiverId: string,
-    serviceId: string,
     groupId: string,
   ): Promise<RoutingRule | null>;
-  /** Resolver için: receiver+servis'in AKTİF kurallarını hedefleriyle döner. */
-  findActiveTargets(
-    receiverId: string,
-    serviceId: string,
-  ): Promise<RoutingRuleWithTargets[]>;
+  /** Resolver için: receiver'ın AKTİF kurallarını hedefleriyle döner. */
+  findActiveTargets(receiverId: string): Promise<RoutingRuleWithTargets[]>;
+  /**
+   * `findActiveTargets`'in TERSİ: bir developer'a (doğrudan `developerId` veya üye olduğu
+   * bir grup üzerinden) yönlendirilen AKTİF kuralların benzersiz `receiverId` listesini döner.
+   * Developer geçmişini süzmek için kullanılır (canlı emit ile aynı kapsam).
+   */
+  findReceiverIdsForDeveloper(developerId: string): Promise<string[]>;
   /** Kuralın aktiflik durumunu günceller. */
   toggle(id: string, isActive: boolean): Promise<RoutingRule>;
   /** Kuralı siler. */
@@ -130,27 +126,29 @@ export interface IRoutingRepository {
   findUserById(userId: string): Promise<User | null>;
   /** Verilen id'lerdeki kullanıcıları döner (developer e-postaları için toplu çekim). */
   findUsersByIds(ids: string[]): Promise<User[]>;
-  findServiceById(serviceId: string): Promise<ServiceRegistry | null>;
   findGroupById(groupId: string): Promise<Group | null>;
 }
 
 /**
- * Yönlendirme çözümleyici — bir receiver+servis için hedef developer'ları belirler.
+ * Yönlendirme çözümleyici — bir receiver için hedef developer'ları belirler.
  * DB'den aktif kuralları çekmek ASYNC, ardından üyeleri flatten + dedupe etmek SYNC'tir.
  */
 export interface IRoutingResolver {
   /**
    * Hedef developer'ların benzersiz id listesini döner (Socket.IO emit hedefi).
-   * Hiç aktif kural yoksa veya `serviceId` null ise boş liste döner — kimseye gitmez.
+   * Receiver'ın hiç aktif kuralı yoksa boş liste döner — kimseye gitmez.
    */
-  resolveTargets(receiverId: string, serviceId: string | null): Promise<string[]>;
+  resolveTargets(receiverId: string): Promise<string[]>;
   /**
    * Hedef developer'ların salt-okunur görünümünü döner (OTP "kimlerle paylaşıyorum").
    */
-  resolveTargetDetails(
-    receiverId: string,
-    serviceId: string | null,
-  ): Promise<TargetUser[]>;
+  resolveTargetDetails(receiverId: string): Promise<TargetUser[]>;
+  /**
+   * `resolveTargets`'in TERSİ: bir developer'ın hangi receiver'ların kodlarını görmeye
+   * yetkili olduğunu döner (doğrudan + grup üyeliği, yalnızca aktif kurallar).
+   * Tekilleştirilmiş receiverId listesi; hiç kural yoksa boş liste (developer hiçbir kod görmez).
+   */
+  resolveVisibleReceiverIds(developerId: string): Promise<string[]>;
 }
 
 /**

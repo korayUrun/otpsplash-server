@@ -3,14 +3,13 @@ import { RoutingTarget } from '@prisma/client';
 
 /**
  * `POST /api/routing-rules` gövdesi.
- * `projectId` body'de YOKTUR — admin'in projesinden alınır.
+ * `projectId` body'de YOKTUR — admin'in projesinden alınır. Servis kavramı yoktur.
  * Hedef tutarlılığı refine ile zorlanır: DEVELOPER → developerId zorunlu & groupId yasak;
  * GROUP → groupId zorunlu & developerId yasak.
  */
 export const createRoutingRuleSchema = z
   .object({
     receiverId: z.string().uuid(),
-    serviceId: z.string().uuid(),
     targetType: z.nativeEnum(RoutingTarget),
     developerId: z.string().uuid().optional(),
     groupId: z.string().uuid().optional(),

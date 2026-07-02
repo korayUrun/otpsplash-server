@@ -1,3 +1,4 @@
+import type { Device, User } from '@prisma/client';
 import { CONSTANTS } from '@config/constants';
 import { AppError } from '@errors/AppError';
 import { AuthorizationError, NotFoundError } from '@errors/errors';
@@ -7,17 +8,16 @@ import { type Result, ok, fail } from '@app-types/Result';
 import type { PaginatedResult } from '@app-types/index';
 import type { IRoutingResolver } from '@modules/routing/routing.interfaces';
 import type {
-  IServiceResolver,
-  IUnmatchedRecorder,
-} from '@modules/service-registry/registry.interfaces';
-import type {
   GetHistoryDTO,
   GetReceiverHistoryDTO,
   IOtpEncryptor,
   IOtpNotifier,
   IOtpRepository,
   IOtpService,
+  OtpDeviceInfo,
   OtpHistoryItem,
+  OtpNotification,
+  OtpReceiverInfo,
   ProcessOtpDTO,
   ProcessOtpResult,
   ReceiverOtpHistoryItem,
@@ -27,11 +27,10 @@ import type {
 
 /**
  * OTP iş mantığı.
- * Akış (FAZ 8): servis çözümle (AWAIT, cache'li) → encrypt (SYNC) → DB kaydet (AWAIT) →
- * routing çöz (AWAIT) → emit (SYNC). DB hatasında emit YAPILMAZ (kayıt → bildirim sırası garanti).
- * Parse/validate adımı YOKTUR — `code` cihazda parse edilir, format Zod'da doğrulanır (DRY).
- * Hedef kitle routing resolver'ın belirlediği developer'lardır (FAZ 7).
- * Bağımlılıklar interface üzerinden enjekte edilir (DIP).
+ * Akış: encrypt (SYNC) → DB kaydet (AWAIT) → routing çöz (AWAIT) → emit (SYNC).
+ * DB hatasında emit YAPILMAZ (kayıt → bildirim sırası garanti). Servis çözümleme YOKTUR —
+ * kural artık receiver bazlıdır. Parse/validate adımı da YOKTUR — `code` cihazda parse edilir,
+ * format Zod'da doğrulanır (DRY). Bağımlılıklar interface üzerinden enjekte edilir (DIP).
  */
 export class OtpService implements IOtpService {
   constructor(
@@ -39,8 +38,6 @@ export class OtpService implements IOtpService {
     private readonly repository: IOtpRepository,
     private readonly notifier: IOtpNotifier,
     private readonly routingResolver: IRoutingResolver,
-    private readonly serviceResolver: IServiceResolver,
-    private readonly unmatchedRecorder: IUnmatchedRecorder,
     private readonly logger: ILogger,
   ) {}
 
@@ -48,23 +45,12 @@ export class OtpService implements IOtpService {
     dto: ProcessOtpDTO,
   ): Promise<Result<ProcessOtpResult>> {
     try {
-      // 1) Servis çözümle (cache'li — dışarıdan her zaman await). Çözülemezse kova'ya
-      //    fire-and-forget yaz ve serviceId: null ile devam et (OTP yine kaydedilir).
-      const resolved = await this.serviceResolver.resolve(
-        dto.projectId,
-        dto.senderRaw,
-        dto.serviceHint,
-      );
-      const serviceId = resolved?.id ?? null;
-      if (resolved === null) {
-        this.recordUnmatchedSafely(dto.projectId, dto.senderRaw);
-      }
-
-      // 2) Şifrele (SYNC) — DB'ye asla düz kod yazılmaz. Format Zod'da doğrulandı, tekrar etme.
+      // 1) Şifrele (SYNC) — DB'ye asla düz kod yazılmaz. Format Zod'da doğrulandı, tekrar etme.
       const encryptedCode = this.encryptor.encrypt(dto.code);
 
-      // 3) Kalıcılaştır (AWAIT). receiverId sahiplik kaynağıdır (deviceId'den bağımsız).
+      // 2) Kalıcılaştır (AWAIT). receiverId sahiplik kaynağıdır (deviceId'den bağımsız).
       //    Geçerlilik 90 sn — mobil bu değere göre geri sayar (CLAUDE/PHASES madde 3).
+      //    Kayıt receiver + device ilişkileriyle döner (emit payload'ı için).
       const expiresAt = new Date(
         Date.now() + CONSTANTS.OTP.TTL_SECONDS * CONSTANTS.TIME.SECOND_MS,
       );
@@ -74,34 +60,39 @@ export class OtpService implements IOtpService {
         projectId: dto.projectId,
         deviceId: dto.deviceId,
         receiverId: dto.receiverId,
-        serviceId: serviceId ?? undefined,
         senderRaw: dto.senderRaw,
         expiresAt,
       });
 
-      // 4) Routing: hedef developer'ları çöz (AWAIT). Kural/servis yoksa boş liste → kimseye gitmez.
+      // 3) Routing: hedef developer'ları çöz (AWAIT). Kural yoksa boş liste → kimseye gitmez.
       const targetUserIds = await this.routingResolver.resolveTargets(
         dto.receiverId,
-        serviceId,
       );
 
-      // 5) Yalnızca kayıt başarılıysa hedeflere anlık yayınla (SYNC).
-      //    serviceName (çözüldüyse) + senderRaw (fallback) taşınır ki canlı kart hemen etiketlensin.
-      const deliveredTo = this.notifier.notify(targetUserIds, {
+      // 4) Yalnızca kayıt başarılıysa anlık yayınla (SYNC). Payload bir kez kurulur:
+      //    senderRaw etiketi + expiresAt (geri sayım) + receiver/device kimliği taşır.
+      const payload: OtpNotification = {
         id: saved.id,
         code: dto.code,
         source: saved.source,
         createdAt: saved.createdAt,
-        serviceName: resolved?.name ?? null,
+        expiresAt: saved.expiresAt,
+        sharingActive: saved.sharingActive,
         senderRaw: dto.senderRaw,
-      });
+        receiver: this.toReceiverInfo(saved.receiver),
+        device: this.toDeviceInfo(saved.device),
+      };
+      // 4a) Routing hedefi developer'lara yayınla — dönen sayı "deliveredTo".
+      const deliveredTo = this.notifier.notify(targetUserIds, payload);
+      // 4b) Sahibi receiver'ın kendi odasına da yayınla (routing'den bağımsız, deliveredTo'yu
+      //     etkilemez) — receiver kendi geçmişinde yeni kodu anında, refresh'siz görür.
+      this.notifier.notifyReceiver(dto.receiverId, payload);
 
       this.logger.info(
         {
           otpId: saved.id,
           projectId: dto.projectId,
           source: dto.source,
-          serviceId,
           deliveredTo,
         },
         'OTP işlendi ve iletildi',
@@ -117,21 +108,32 @@ export class OtpService implements IOtpService {
     dto: GetHistoryDTO,
   ): Promise<Result<PaginatedResult<OtpHistoryItem>>> {
     try {
-      const page = await this.repository.findByProject(dto.projectId, {
-        page: dto.page,
-        limit: dto.limit,
-      });
+      // Canlı emit'le aynı routing çözümü: developer yalnızca kendisine (doğrudan) veya
+      // üye olduğu gruba yönlendirilen aktif kuralların kapsadığı receiver'ların kodlarını görür.
+      // Kural yoksa → boş kapsam → DB'ye gitmeden boş feed (canlı feed ile hizalı).
+      const receiverIds = await this.routingResolver.resolveVisibleReceiverIds(
+        dto.developerId,
+      );
+      if (receiverIds.length === 0) {
+        return ok(this.emptyPage(dto.page, dto.limit));
+      }
+
+      const page = await this.repository.findForDeveloper(
+        dto.projectId,
+        receiverIds,
+        { page: dto.page, limit: dto.limit },
+      );
 
       // Şifre çözme SYNC — map içinde her kayıt için uygulanır.
-      // serviceName çözüldüyse dolu; değilse developer satırı senderRaw'a düşer.
       const items: OtpHistoryItem[] = page.items.map((log) => ({
         id: log.id,
         code: this.encryptor.decrypt(log.encryptedCode),
         source: log.source,
         createdAt: log.createdAt,
         expiresAt: log.expiresAt,
-        serviceName: log.service?.name ?? null,
         senderRaw: log.senderRaw,
+        receiver: this.toReceiverInfo(log.receiver),
+        device: this.toDeviceInfo(log.device),
       }));
 
       return ok({ items, pagination: page.pagination });
@@ -144,7 +146,7 @@ export class OtpService implements IOtpService {
     dto: GetReceiverHistoryDTO,
   ): Promise<Result<PaginatedResult<ReceiverOtpHistoryItem>>> {
     try {
-      // findByProject'in AKSİNE: expired + sharing-off DAHİL — receiver kendi kodlarını yönetir.
+      // findForDeveloper'ın AKSİNE: expired + sharing-off DAHİL — receiver kendi kodlarını yönetir.
       const page = await this.repository.findByReceiver(dto.receiverId, {
         page: dto.page,
         limit: dto.limit,
@@ -158,9 +160,9 @@ export class OtpService implements IOtpService {
         createdAt: log.createdAt,
         expiresAt: log.expiresAt,
         sharingActive: log.sharingActive,
-        serviceName: log.service?.name ?? null,
         senderRaw: log.senderRaw,
-        deviceName: log.device?.deviceName ?? null,
+        receiver: this.toReceiverInfo(log.receiver),
+        device: this.toDeviceInfo(log.device),
       }));
 
       return ok({ items, pagination: page.pagination });
@@ -193,7 +195,6 @@ export class OtpService implements IOtpService {
       if (!isActive) {
         const targetUserIds = await this.routingResolver.resolveTargets(
           otp.receiverId,
-          otp.serviceId,
         );
         this.notifier.notifyRevoked(otpId, targetUserIds);
       }
@@ -225,7 +226,6 @@ export class OtpService implements IOtpService {
 
       const targets = await this.routingResolver.resolveTargetDetails(
         otp.receiverId,
-        otp.serviceId,
       );
       return ok({ targets });
     } catch (error) {
@@ -233,20 +233,26 @@ export class OtpService implements IOtpService {
     }
   }
 
-  /**
-   * Eşleşmeyen `senderRaw`'ı kova satırına fire-and-forget yazar.
-   * OTP işleme yolunu BLOKLAMAZ (response'u bekletmez); hata yalnızca loglanır,
-   * OTP'nin kendisinin kaydedilmesini/iletilmesini etkilemez.
-   */
-  private recordUnmatchedSafely(projectId: string, senderRaw: string): void {
-    void this.unmatchedRecorder
-      .recordUnmatched(projectId, senderRaw)
-      .catch((error: unknown) => {
-        this.logger.error(
-          { error, projectId },
-          'eşleşmeyen sinyal kova kaydı başarısız',
-        );
-      });
+  /** OTP'yi üreten receiver'ın kimlik görünümü (developer'a "kimden geldi"). */
+  private toReceiverInfo(receiver: User): OtpReceiverInfo {
+    return {
+      name: receiver.name,
+      email: receiver.email,
+      phoneNumber: receiver.phoneNumber,
+    };
+  }
+
+  /** Cihaz bilgisi; cihaz silinmişse (deviceId null) `null` — sahiplik korunur, ad kaybolur. */
+  private toDeviceInfo(device: Device | null): OtpDeviceInfo | null {
+    return device ? { name: device.deviceName } : null;
+  }
+
+  /** Hiç routing kapsamı olmayan developer için boş sayfa (DB'ye gidilmez). */
+  private emptyPage<T>(page: number, limit: number): PaginatedResult<T> {
+    return {
+      items: [],
+      pagination: { page, limit, total: 0, totalPages: 0 },
+    };
   }
 
   /**

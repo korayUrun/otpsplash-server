@@ -101,10 +101,21 @@ describe('handleConnection', () => {
     );
   });
 
-  it('RECEIVER → hiçbir odaya katılmaz', () => {
+  it('RECEIVER → kendi kullanıcı odasına katılır (kendi OTP\'sini canlı görür)', () => {
     const { socket, join } = fakeConnSocket({
       ...samplePayload,
       role: Role.RECEIVER,
+    });
+    handleConnection(socket);
+    expect(join).toHaveBeenCalledWith(
+      CONSTANTS.SOCKET.userRoom(samplePayload.sub),
+    );
+  });
+
+  it('ADMIN → hiçbir odaya katılmaz (OTP feed\'i yok)', () => {
+    const { socket, join } = fakeConnSocket({
+      ...samplePayload,
+      role: Role.ADMIN,
     });
     handleConnection(socket);
     expect(join).not.toHaveBeenCalled();

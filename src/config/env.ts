@@ -43,14 +43,6 @@ const envSchema = z
 
     DEVICE_SECRET_BYTES: z.coerce.number().int().positive().default(32),
 
-    // ServiceRegistry kurallarının in-memory cache ömrü (ms). Admin yeni kural eklediğinde
-    // en geç bu süre içinde devreye girer; 0 → cache devre dışı (her resolve DB'den okur).
-    SERVICE_REGISTRY_CACHE_TTL_MS: z.coerce
-      .number()
-      .int()
-      .nonnegative()
-      .default(60_000),
-
     // cors() middleware ve Socket.IO origin'i. Yerel ağ/mobil testte '*' (wildcard),
     // production'da gerçek origin ile değiştirilir.
     CORS_ORIGIN: z.string().default('*'),

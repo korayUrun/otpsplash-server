@@ -3,11 +3,11 @@ import { Source } from '@prisma/client';
 import { CONSTANTS } from '@config/constants';
 
 /**
- * `POST /api/otp` gövdesi (FAZ 8).
+ * `POST /api/otp` gövdesi.
  * Parse cihazda yapılır; backend ham SMS metni (`smsText`) almaz. `code` cihazda parse
  * edilmiş 6 haneli koddur ve zorunludur; format kontrolü TEK YERDE burada (Zod) yapılır —
- * `otp.service` artık ayrıca `validate()` çağırmaz (DRY). `senderRaw` servis çözümlemesinin
- * birincil sinyalidir (zorunlu); `serviceHint` opsiyonel yedek sinyaldir.
+ * `otp.service` artık ayrıca `validate()` çağırmaz (DRY). `senderRaw` developer'a gösterilecek
+ * gönderici etiketidir (zorunlu; SMS gövdesi değildir).
  * `projectId`/`receiverId` body'de YOKTUR — doğrulanmış cihazdan alınır (proje izolasyonu + sahiplik).
  */
 export const processOtpSchema = z.object({
@@ -16,8 +16,7 @@ export const processOtpSchema = z.object({
     .length(CONSTANTS.OTP.CODE_LENGTH)
     .regex(/^\d+$/, 'code yalnızca rakamlardan oluşmalı'),
   source: z.nativeEnum(Source),
-  senderRaw: z.string().min(1).max(CONSTANTS.REGISTRY.SIGNAL_MAX_LENGTH),
-  serviceHint: z.string().min(1).max(CONSTANTS.REGISTRY.SIGNAL_MAX_LENGTH).optional(),
+  senderRaw: z.string().min(1).max(CONSTANTS.OTP.SENDER_MAX_LENGTH),
 });
 
 /** `PATCH /api/otp/:id/sharing` ve `GET /api/otp/:id/sharing` path parametresi. */

@@ -30,7 +30,6 @@ export class OtpController {
       code: body.code,
       source: body.source,
       senderRaw: body.senderRaw,
-      serviceHint: body.serviceHint,
       projectId: req.device.projectId,
       deviceId: req.device.id,
       receiverId: req.device.userId,
@@ -61,6 +60,7 @@ export class OtpController {
             limit: query.limit,
           })
         : await this.otpService.getHistory({
+            developerId: req.user.sub,
             projectId: req.user.projectId,
             page: query.page,
             limit: query.limit,

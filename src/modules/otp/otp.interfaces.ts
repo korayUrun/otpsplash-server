@@ -6,19 +6,17 @@ import type { TargetUser } from '@modules/routing/routing.interfaces';
 // ───────────────────────── DTO'lar ─────────────────────────
 
 /**
- * `POST /api/otp` iş katmanı girişi (FAZ 8).
+ * `POST /api/otp` iş katmanı girişi.
  * `code` cihazda parse edilmiş 6 haneli koddur (format Zod'da doğrulanır, service tekrar etmez).
- * `senderRaw`/`serviceHint` servis çözümleme sinyalleridir — backend `serviceId`'yi bunlardan
- * çözer (body'de serviceId YOKTUR). `projectId`/`deviceId`/`receiverId` body'den değil
- * doğrulanmış cihazdan (`req.device`) gelir — proje izolasyonu + kaynak izleme + sahiplik.
+ * `senderRaw` developer'a gösterilecek gönderici etiketidir (ham gönderici kimliği; SMS gövdesi
+ * DEĞİL). `projectId`/`deviceId`/`receiverId` body'den değil doğrulanmış cihazdan (`req.device`)
+ * gelir — proje izolasyonu + kaynak izleme + sahiplik.
  */
 export interface ProcessOtpDTO {
   code: string;
   source: Source;
-  /** Servis çözümlemesinin birincil sinyali (ham gönderici kimliği) — zorunlu. */
+  /** Ham gönderici kimliği — developer'a gösterilecek etiket (zorunlu). */
   senderRaw: string;
-  /** Yedek sinyal (mesaj içi anahtar kelime) — opsiyonel. */
-  serviceHint?: string;
   projectId: string;
   /** OTP'yi gönderen cihaz (Device Secret ile doğrulandı) — kaynak izleme/analiz. */
   deviceId: string;
@@ -33,9 +31,14 @@ export interface ProcessOtpResult {
   deliveredTo: number;
 }
 
-/** Geçmiş sorgusu girişi (sayfalama + proje kapsamı). */
+/**
+ * Developer geçmiş sorgusu girişi. `projectId` izolasyon güvencesidir; asıl süzme
+ * `developerId`'ye aktif kuralla yönlendirilen receiver'lara göre yapılır
+ * (canlı emit'le aynı routing çözümü — kural yoksa boş feed).
+ */
 export interface GetHistoryDTO extends PaginationOptions {
   projectId: string;
+  developerId: string;
 }
 
 /** Receiver geçmiş sorgusu — kendi kayıtları (receiverId ile süzülür). */
@@ -45,20 +48,38 @@ export interface GetReceiverHistoryDTO extends PaginationOptions {
   projectId: string;
 }
 
-/** Geçmiş kaydının client'a dönülen, şifresi çözülmüş görünümü. */
+/** OTP'yi üreten receiver'ın kimlik bilgisi (developer'a "kimden geldi" gösterimi). */
+export interface OtpReceiverInfo {
+  /** Görünen ad; opsiyonel. Mobil `name ?? email` fallback yapar. */
+  name: string | null;
+  email: string;
+  /** Receiver'ın hesap iletişim numarası; opsiyonel. */
+  phoneNumber: string | null;
+}
+
+/**
+ * OTP'yi gönderen cihazın bilgisi. Cihaz silinmişse (deviceId null'a düştüyse) `null` —
+ * sahiplik korunur ama cihaz adı kaybolur (CLAUDE.md kademeli bozulma kararı).
+ */
+export interface OtpDeviceInfo {
+  /** Receiver'ın beyan ettiği cihaz adı (device.deviceName); yoksa null. */
+  name: string | null;
+}
+
+/** Geçmiş kaydının client'a dönülen, şifresi çözülmüş görünümü (developer). */
 export interface OtpHistoryItem {
   id: string;
   code: string;
   source: Source;
   createdAt: Date;
   expiresAt: Date;
-  /** Çözümlenen servis adı (service.name); çözülemediyse null → client `senderRaw`'a düşer. */
-  serviceName: string | null;
-  /** Ham gönderici kimliği — servis çözülemezse gösterilecek fallback etiket; eski kayıtlarda null. */
+  /** Ham gönderici kimliği — developer'a gösterilecek etiket; eski kayıtlarda null. */
   senderRaw: string | null;
+  receiver: OtpReceiverInfo;
+  device: OtpDeviceInfo | null;
 }
 
-/** Receiver'a dönen zengin geçmiş kaydı (developer'ın minimal item'ından farklı). */
+/** Receiver'a dönen zengin geçmiş kaydı (paylaşım durumuyla). */
 export interface ReceiverOtpHistoryItem {
   id: string;
   code: string;
@@ -66,22 +87,15 @@ export interface ReceiverOtpHistoryItem {
   createdAt: Date;
   expiresAt: Date;
   sharingActive: boolean;
-  /** Çözümlenen servis adı (service.name); çözülemediyse null. */
-  serviceName: string | null;
-  /** Ham gönderici kimliği — servis çözülemezse gösterilecek fallback etiket; eski kayıtlarda null. */
+  /** Ham gönderici kimliği; eski kayıtlarda null. */
   senderRaw: string | null;
-  /** Receiver'ın beyan ettiği cihaz adı (device.deviceName); yoksa null. */
-  deviceName: string | null;
+  receiver: OtpReceiverInfo;
+  device: OtpDeviceInfo | null;
 }
 
-/** service + device ilişkileri include edilmiş OTPLog (findByReceiver dönüşü). */
+/** receiver + device ilişkileri include edilmiş OTPLog (save/history dönüşü). */
 export type OtpLogWithRelations = Prisma.OTPLogGetPayload<{
-  include: { service: true; device: true };
-}>;
-
-/** service ilişkisi include edilmiş OTPLog (findByProject dönüşü — developer history serviceName). */
-export type OtpLogWithService = Prisma.OTPLogGetPayload<{
-  include: { service: true };
+  include: { receiver: true; device: true };
 }>;
 
 /** `PATCH /api/otp/:id/sharing` çıktısı. */
@@ -103,23 +117,25 @@ export interface CreateOtpLogData {
   deviceId?: string;
   /** Sahiplik kaynağı — deviceId null'a düşse bile kalıcı. */
   receiverId: string;
-  /** Çözümlenen servis; çözülemezse null. */
-  serviceId?: string;
-  /** Ham gönderici kimliği — servis çözülemezse fallback etiket olarak kalıcılaştırılır. */
+  /** Ham gönderici kimliği — developer'a gösterilecek etiket olarak kalıcılaştırılır. */
   senderRaw?: string;
   expiresAt: Date;
 }
 
-/** Socket üzerinden developer ekranına anlık yayınlanan OTP yükü (düz kod). */
+/** Socket üzerinden developer + sahibi receiver ekranına anlık yayınlanan OTP yükü (düz kod). */
 export interface OtpNotification {
   id: string;
   code: string;
   source: Source;
   createdAt: Date;
-  /** Çözümlenen servis adı; çözülemediyse null → canlı kart `senderRaw`'a düşer. */
-  serviceName: string | null;
-  /** Ham gönderici kimliği — servis çözülemezse gösterilecek fallback etiket (POST'ta hep dolu). */
+  /** 90 sn TTL sonu — canlı kartın geri sayımı için (hem developer hem receiver kullanır). */
+  expiresAt: Date;
+  /** Yeni OTP her zaman paylaşımda (true) — receiver kartının toggle durumunu doğru göstermek için. */
+  sharingActive: boolean;
+  /** Ham gönderici kimliği — developer'a gösterilecek etiket (POST'ta hep dolu). */
   senderRaw: string;
+  receiver: OtpReceiverInfo;
+  device: OtpDeviceInfo | null;
 }
 
 /** `otp:revoked` event yükü — developer UI'ının ilgili kartı kaldırması için sinyal. */
@@ -156,22 +172,26 @@ export interface IOtpEncryptor {
  * OTP kalıcılık katmanı. Tüm işlemler I/O — ASYNC.
  */
 export interface IOtpRepository {
-  /** Yeni OTP kaydı oluşturur. */
-  save(data: CreateOtpLogData): Promise<OTPLog>;
-  /** OTP'yi id ile getirir (sahiplik/servis kontrolü için); yoksa `null`. */
+  /** Yeni OTP kaydı oluşturur; receiver + device ilişkileriyle döner (emit payload'ı için). */
+  save(data: CreateOtpLogData): Promise<OtpLogWithRelations>;
+  /** OTP'yi id ile getirir (sahiplik kontrolü için); yoksa `null`. */
   findById(id: string): Promise<OTPLog | null>;
   /**
-   * Projeye ait, süresi dolmamış ve paylaşımı AÇIK kayıtları sayfalı döner (createdAt desc).
-   * `sharingActive: false` olanlar history'de görünmez (FAZ 7). service include edilir (serviceName).
+   * Bir developer'ın görmeye yetkili olduğu kayıtları sayfalı döner (createdAt desc).
+   * Süresi dolmamış + paylaşımı AÇIK (`sharingActive:true`) kayıtlar arasından yalnızca
+   * verilen receiver'lara ait olanlar gelir — canlı emit'in routing çözümüyle hizalı.
+   * `receiverIds` boşsa çağrılmamalıdır (service katmanı kısa devre yapar).
+   * receiver + device include edilir.
    */
-  findByProject(
+  findForDeveloper(
     projectId: string,
+    receiverIds: string[],
     options: PaginationOptions,
-  ): Promise<PaginatedResult<OtpLogWithService>>;
+  ): Promise<PaginatedResult<OtpLogWithRelations>>;
   /**
    * Bir receiver'ın KENDİ kayıtlarını sayfalı döner (createdAt desc).
-   * findByProject'in AKSİNE: sharingActive=false ve süresi dolmuş kayıtlar da GELİR
-   * (receiver kendi kodlarını görüp paylaşımı yönetebilmeli). service + device include edilir.
+   * findForDeveloper'ın AKSİNE: sharingActive=false ve süresi dolmuş kayıtlar da GELİR
+   * (receiver kendi kodlarını görüp paylaşımı yönetebilmeli). receiver + device include edilir.
    */
   findByReceiver(
     receiverId: string,
@@ -188,10 +208,16 @@ export interface IOtpRepository {
  */
 export interface IOtpNotifier {
   /**
-   * OTP'yi hedef developer'ların bireysel `user:` odalarına yayınlar (FAZ 7 hedefli dağıtım).
+   * OTP'yi hedef developer'ların bireysel `user:` odalarına yayınlar (hedefli dağıtım).
    * @returns Emit edilen hedef developer sayısı ("deliveredTo").
    */
   notify(targetUserIds: string[], payload: OtpNotification): number;
+  /**
+   * OTP'yi sahibi receiver'ın KENDİ `user:` odasına yayınlar — receiver kendi cihazının
+   * ürettiği kodu geçmişinde anında (refresh'siz) görür. `notify`'dan bağımsızdır ve
+   * `deliveredTo`'yu ETKİLEMEZ; routing'den de bağımsız olarak her OTP için çağrılır.
+   */
+  notifyReceiver(receiverId: string, payload: OtpNotification): void;
   /**
    * Paylaşımı durdurulan OTP için `otp:revoked` event'ini hedef developer'lara yayınlar.
    * `notify` ile aynı (user-bazlı) hedeflemeyi kullanır — çift emit önlenir.
@@ -205,7 +231,7 @@ export interface IOtpNotifier {
 export interface IOtpService {
   processAndDeliver(dto: ProcessOtpDTO): Promise<Result<ProcessOtpResult>>;
   getHistory(dto: GetHistoryDTO): Promise<Result<PaginatedResult<OtpHistoryItem>>>;
-  /** Receiver'ın kendi OTP geçmişi (paylaşım durumu + servis/cihaz adıyla). */
+  /** Receiver'ın kendi OTP geçmişi (paylaşım durumu + cihaz adıyla). */
   getReceiverHistory(
     dto: GetReceiverHistoryDTO,
   ): Promise<Result<PaginatedResult<ReceiverOtpHistoryItem>>>;

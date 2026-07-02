@@ -6,7 +6,6 @@ import { createApp } from '../../src/app';
 import {
   createTestGroup,
   createTestRoutingRule,
-  createTestService,
   createTestUser,
 } from '../helpers/fixtures';
 import {
@@ -180,13 +179,8 @@ describe('DELETE /api/groups/:id', () => {
 
     // Bu grubu hedefleyen bir routing kuralı — silme sonrası dangling kalmamalı.
     const receiver = await userInProject(admin, Role.RECEIVER);
-    const service = await createTestService({
-      projectId: admin.project.id,
-      name: 'Binance',
-    });
     const rule = await createTestRoutingRule({
       receiverId: receiver.id,
-      serviceId: service.id,
       targetType: RoutingTarget.GROUP,
       groupId: group.id,
     });

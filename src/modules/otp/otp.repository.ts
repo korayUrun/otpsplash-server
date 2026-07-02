@@ -1,11 +1,13 @@
-import type { OTPLog, PrismaClient } from '@prisma/client';
+import type { OTPLog, Prisma, PrismaClient } from '@prisma/client';
 import type { PaginatedResult, PaginationOptions } from '@app-types/index';
 import type {
   CreateOtpLogData,
   IOtpRepository,
   OtpLogWithRelations,
-  OtpLogWithService,
 } from './otp.interfaces';
+
+/** save/history sorgularının paylaştığı include seti (receiver kimliği + cihaz adı). */
+const WITH_RELATIONS = { receiver: true, device: true } as const;
 
 /**
  * Prisma tabanlı OTP repository (DB katmanı — SRP).
@@ -14,8 +16,8 @@ import type {
 export class PrismaOtpRepository implements IOtpRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async save(data: CreateOtpLogData): Promise<OTPLog> {
-    return this.prisma.oTPLog.create({ data });
+  async save(data: CreateOtpLogData): Promise<OtpLogWithRelations> {
+    return this.prisma.oTPLog.create({ data, include: WITH_RELATIONS });
   }
 
   async findById(id: string): Promise<OTPLog | null> {
@@ -23,26 +25,28 @@ export class PrismaOtpRepository implements IOtpRepository {
   }
 
   /**
-   * Projeye ait, süresi DOLMAMIŞ ve paylaşımı AÇIK kayıtları sayfalı döner (en yeni önce).
-   * `sharingActive: false` (receiver durdurmuş) kayıtlar history'den düşer (FAZ 7).
-   * service include edilir → developer satırı serviceName ile etiketlenir (çözülemezse senderRaw'a düşer).
-   * Toplam sayım ve veri çekme tek round-trip'te paralel (Promise.all).
+   * Bir developer'a aktif kuralla yönlendirilen kayıtları sayfalı döner (en yeni önce).
+   * Görünürlük filtreleri: `sharingActive` açık + süresi dolmamış; ek olarak yalnızca
+   * verilen receiver'lara ait kayıtlar (`receiverId IN receiverIds`). Böylece geçmiş,
+   * canlı emit'in `resolveTargets` çözümüyle hizalanır (receiver bazlı erişim).
    */
-  async findByProject(
+  async findForDeveloper(
     projectId: string,
+    receiverIds: string[],
     options: PaginationOptions,
-  ): Promise<PaginatedResult<OtpLogWithService>> {
-    const where = {
+  ): Promise<PaginatedResult<OtpLogWithRelations>> {
+    const where: Prisma.OTPLogWhereInput = {
       projectId,
       sharingActive: true,
       expiresAt: { gt: new Date() },
+      receiverId: { in: receiverIds },
     };
     const skip = (options.page - 1) * options.limit;
 
     const [items, total] = await Promise.all([
       this.prisma.oTPLog.findMany({
         where,
-        include: { service: true },
+        include: WITH_RELATIONS,
         orderBy: { createdAt: 'desc' },
         skip,
         take: options.limit,
@@ -63,8 +67,8 @@ export class PrismaOtpRepository implements IOtpRepository {
 
   /**
    * Bir receiver'ın KENDİ kayıtlarını sayfalı döner (en yeni önce).
-   * findByProject'in AKSİNE filtre YOKTUR: süresi dolmuş + sharingActive=false kayıtlar da GELİR
-   * — receiver kendi kodlarını görüp paylaşımı yönetebilmeli. service + device include edilir.
+   * findForDeveloper'ın AKSİNE filtre YOKTUR: süresi dolmuş + sharingActive=false kayıtlar da
+   * GELİR — receiver kendi kodlarını görüp paylaşımı yönetebilmeli.
    */
   async findByReceiver(
     receiverId: string,
@@ -76,7 +80,7 @@ export class PrismaOtpRepository implements IOtpRepository {
     const [items, total] = await Promise.all([
       this.prisma.oTPLog.findMany({
         where,
-        include: { service: true, device: true },
+        include: WITH_RELATIONS,
         orderBy: { createdAt: 'desc' },
         skip,
         take: options.limit,

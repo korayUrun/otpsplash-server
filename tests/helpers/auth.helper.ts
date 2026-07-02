@@ -16,13 +16,27 @@ export interface DeviceContext extends AuthContext {
   deviceSecret: string;
 }
 
+/** createAuthContext'e verilebilecek opsiyonel kullanıcı alanları (payload assert'leri için). */
+interface AuthUserOverrides {
+  name?: string;
+  phoneNumber?: string;
+}
+
 /**
  * Verilen rolde proje + kullanıcı oluşturur ve geçerli token çifti üretir.
  * Token'lar HTTP'ye gitmeden token servisiyle imzalanır (hızlı, deterministik).
  */
-export async function createAuthContext(role: Role): Promise<AuthContext> {
+export async function createAuthContext(
+  role: Role,
+  overrides: AuthUserOverrides = {},
+): Promise<AuthContext> {
   const project = await createTestProject();
-  const { user, password } = await createTestUser({ projectId: project.id, role });
+  const { user, password } = await createTestUser({
+    projectId: project.id,
+    role,
+    name: overrides.name,
+    phoneNumber: overrides.phoneNumber,
+  });
 
   const accessToken = tokenService.generateAccessToken({
     sub: user.id,
@@ -35,8 +49,9 @@ export async function createAuthContext(role: Role): Promise<AuthContext> {
   return { project, user, password, accessToken, refreshToken };
 }
 
-export const getReceiverToken = (): Promise<AuthContext> =>
-  createAuthContext(Role.RECEIVER);
+export const getReceiverToken = (
+  overrides: AuthUserOverrides = {},
+): Promise<AuthContext> => createAuthContext(Role.RECEIVER, overrides);
 export const getDeveloperToken = (): Promise<AuthContext> =>
   createAuthContext(Role.DEVELOPER);
 export const getAdminToken = (): Promise<AuthContext> =>

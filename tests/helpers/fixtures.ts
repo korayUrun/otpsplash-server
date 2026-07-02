@@ -9,7 +9,6 @@ import {
   type OTPLog,
   type Project,
   type RoutingRule,
-  type ServiceRegistry,
   type User,
 } from '@prisma/client';
 import { prisma } from '@config/prisma';
@@ -41,6 +40,8 @@ interface CreateUserOptions {
   email?: string;
   password?: string;
   role?: Role;
+  name?: string;
+  phoneNumber?: string;
 }
 
 /**
@@ -58,6 +59,8 @@ export async function createTestUser(
       password: hashed,
       role: opts.role ?? Role.RECEIVER,
       projectId: opts.projectId,
+      name: opts.name,
+      phoneNumber: opts.phoneNumber,
     },
   });
   return { user, password };
@@ -68,6 +71,8 @@ interface CreateDeviceOptions {
   projectId: string;
   platform?: Platform;
   isRevoked?: boolean;
+  deviceName?: string;
+  phoneNumber?: string;
 }
 
 /**
@@ -86,6 +91,8 @@ export async function createTestDevice(
       userId: opts.userId,
       projectId: opts.projectId,
       isRevoked: opts.isRevoked ?? false,
+      deviceName: opts.deviceName,
+      phoneNumber: opts.phoneNumber,
     },
   });
   return { device, secret };
@@ -99,8 +106,7 @@ interface CreateOtpLogOptions {
   deviceId?: string;
   /** Sahip receiver; verilmezse projede yeni bir RECEIVER otomatik oluşturulur. */
   receiverId?: string;
-  serviceId?: string;
-  /** Servis çözülemezse gösterilecek ham gönderici fallback etiketi. */
+  /** Developer'a gösterilecek ham gönderici etiketi. */
   senderRaw?: string;
   sharingActive?: boolean;
   /** Süresi geçmiş kayıt testi için override edilir. */
@@ -131,7 +137,6 @@ export async function createTestOtpLog(
       projectId: opts.projectId,
       deviceId: opts.deviceId,
       receiverId,
-      serviceId: opts.serviceId,
       senderRaw: opts.senderRaw,
       sharingActive: opts.sharingActive ?? true,
       expiresAt,
@@ -153,29 +158,6 @@ async function createPlaceholderReceiver(projectId: string): Promise<string> {
   return user.id;
 }
 
-interface CreateServiceOptions {
-  projectId: string;
-  name?: string | null;
-  isActive?: boolean;
-  senderPattern?: string;
-  keywordPattern?: string;
-}
-
-/** Test servis kayıt defteri satırı oluşturur (FAZ 7'de routing hedefi için). */
-export async function createTestService(
-  opts: CreateServiceOptions,
-): Promise<ServiceRegistry> {
-  return prisma.serviceRegistry.create({
-    data: {
-      name: opts.name === undefined ? 'Test Service' : opts.name,
-      isActive: opts.isActive ?? true,
-      senderPattern: opts.senderPattern,
-      keywordPattern: opts.keywordPattern,
-      projectId: opts.projectId,
-    },
-  });
-}
-
 /** Test grubu oluşturur. */
 export async function createTestGroup(opts: {
   projectId: string;
@@ -188,7 +170,6 @@ export async function createTestGroup(opts: {
 
 interface CreateRoutingRuleOptions {
   receiverId: string;
-  serviceId: string;
   targetType: RoutingTarget;
   developerId?: string;
   groupId?: string;
@@ -202,7 +183,6 @@ export async function createTestRoutingRule(
   return prisma.routingRule.create({
     data: {
       receiverId: opts.receiverId,
-      serviceId: opts.serviceId,
       targetType: opts.targetType,
       developerId: opts.developerId ?? null,
       groupId: opts.groupId ?? null,
