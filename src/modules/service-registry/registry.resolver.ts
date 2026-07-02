@@ -4,6 +4,7 @@ import { logger } from '@infrastructure/logger';
 import type {
   IServiceRegistryRepository,
   IServiceResolver,
+  ResolvedService,
 } from './registry.interfaces';
 
 /** Proje başına önbelleğe alınmış aktif kurallar + geçerlilik sonu (epoch ms). */
@@ -38,13 +39,13 @@ export class ServiceRegistryResolver implements IServiceResolver {
     projectId: string,
     senderRaw: string,
     serviceHint?: string,
-  ): Promise<string | null> {
+  ): Promise<ResolvedService | null> {
     const rules = await this.getRules(projectId);
 
     // 1) Birincil sinyal: senderPattern (tüm kurallarda önce bunu dene — önceliklidir).
     for (const rule of rules) {
       if (rule.senderPattern && this.matches(rule.senderPattern, senderRaw)) {
-        return rule.id;
+        return { id: rule.id, name: rule.name };
       }
     }
 
@@ -52,7 +53,7 @@ export class ServiceRegistryResolver implements IServiceResolver {
     if (serviceHint !== undefined && serviceHint.length > 0) {
       for (const rule of rules) {
         if (rule.keywordPattern && this.matches(rule.keywordPattern, serviceHint)) {
-          return rule.id;
+          return { id: rule.id, name: rule.name };
         }
       }
     }

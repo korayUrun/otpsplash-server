@@ -221,6 +221,8 @@ describe('POST /api/otp', () => {
     expect(encryptor.decrypt(stored!.encryptedCode)).toBe(plain);
     // Kaynak izleme: kayıt doğru cihaza işaret eder.
     expect(stored?.deviceId).toBe(device.id);
+    // Ham gönderici fallback etiketi olarak kalıcılaştırılır (servis çözülemese de).
+    expect(stored?.senderRaw).toBe('TESTSENDER');
   });
 
   it('429 — rate limit aşılınca', async () => {
@@ -439,6 +441,42 @@ describe('GET /api/otp/history', () => {
     const codes = (res.body.data as Array<{ code: string }>).map((d) => d.code);
     expect(codes).toEqual(expect.arrayContaining(['111111', '222222']));
     expect(res.body.pagination.total).toBe(2);
+  });
+
+  it('serviceName çözülmüş kayıtta döner; senderRaw fallback olarak yanında gelir', async () => {
+    const { accessToken, project } = await getDeveloperToken();
+    const service = await createTestService({ projectId: project.id, name: 'Binance' });
+    await createTestOtpLog({
+      projectId: project.id,
+      code: '111111',
+      serviceId: service.id,
+      senderRaw: 'BINANCE',
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].serviceName).toBe('Binance');
+    expect(res.body.data[0].senderRaw).toBe('BINANCE');
+  });
+
+  it('servis çözülemeyen kayıt → serviceName null, senderRaw ham gönderici döner', async () => {
+    const { accessToken, project } = await getDeveloperToken();
+    await createTestOtpLog({
+      projectId: project.id,
+      code: '222222',
+      senderRaw: '+905551112233',
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].serviceName).toBeNull();
+    expect(res.body.data[0].senderRaw).toBe('+905551112233');
   });
 
   it('401 — token yok', async () => {

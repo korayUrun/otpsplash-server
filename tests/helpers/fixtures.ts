@@ -95,6 +95,8 @@ interface CreateOtpLogOptions {
   /** Sahip receiver; verilmezse projede yeni bir RECEIVER otomatik oluşturulur. */
   receiverId?: string;
   serviceId?: string;
+  /** Servis çözülemezse gösterilecek ham gönderici fallback etiketi. */
+  senderRaw?: string;
   sharingActive?: boolean;
   /** Süresi geçmiş kayıt testi için override edilir. */
   expiresAt?: Date;
@@ -124,6 +126,7 @@ export async function createTestOtpLog(
       deviceId: opts.deviceId,
       receiverId,
       serviceId: opts.serviceId,
+      senderRaw: opts.senderRaw,
       sharingActive: opts.sharingActive ?? true,
       expiresAt,
     },

@@ -52,6 +52,10 @@ export interface OtpHistoryItem {
   source: Source;
   createdAt: Date;
   expiresAt: Date;
+  /** Çözümlenen servis adı (service.name); çözülemediyse null → client `senderRaw`'a düşer. */
+  serviceName: string | null;
+  /** Ham gönderici kimliği — servis çözülemezse gösterilecek fallback etiket; eski kayıtlarda null. */
+  senderRaw: string | null;
 }
 
 /** Receiver'a dönen zengin geçmiş kaydı (developer'ın minimal item'ından farklı). */
@@ -64,6 +68,8 @@ export interface ReceiverOtpHistoryItem {
   sharingActive: boolean;
   /** Çözümlenen servis adı (service.name); çözülemediyse null. */
   serviceName: string | null;
+  /** Ham gönderici kimliği — servis çözülemezse gösterilecek fallback etiket; eski kayıtlarda null. */
+  senderRaw: string | null;
   /** Receiver'ın beyan ettiği cihaz adı (device.deviceName); yoksa null. */
   deviceName: string | null;
 }
@@ -71,6 +77,11 @@ export interface ReceiverOtpHistoryItem {
 /** service + device ilişkileri include edilmiş OTPLog (findByReceiver dönüşü). */
 export type OtpLogWithRelations = Prisma.OTPLogGetPayload<{
   include: { service: true; device: true };
+}>;
+
+/** service ilişkisi include edilmiş OTPLog (findByProject dönüşü — developer history serviceName). */
+export type OtpLogWithService = Prisma.OTPLogGetPayload<{
+  include: { service: true };
 }>;
 
 /** `PATCH /api/otp/:id/sharing` çıktısı. */
@@ -94,6 +105,8 @@ export interface CreateOtpLogData {
   receiverId: string;
   /** Çözümlenen servis; çözülemezse null. */
   serviceId?: string;
+  /** Ham gönderici kimliği — servis çözülemezse fallback etiket olarak kalıcılaştırılır. */
+  senderRaw?: string;
   expiresAt: Date;
 }
 
@@ -103,6 +116,10 @@ export interface OtpNotification {
   code: string;
   source: Source;
   createdAt: Date;
+  /** Çözümlenen servis adı; çözülemediyse null → canlı kart `senderRaw`'a düşer. */
+  serviceName: string | null;
+  /** Ham gönderici kimliği — servis çözülemezse gösterilecek fallback etiket (POST'ta hep dolu). */
+  senderRaw: string;
 }
 
 /** `otp:revoked` event yükü — developer UI'ının ilgili kartı kaldırması için sinyal. */
@@ -145,12 +162,12 @@ export interface IOtpRepository {
   findById(id: string): Promise<OTPLog | null>;
   /**
    * Projeye ait, süresi dolmamış ve paylaşımı AÇIK kayıtları sayfalı döner (createdAt desc).
-   * `sharingActive: false` olanlar history'de görünmez (FAZ 7).
+   * `sharingActive: false` olanlar history'de görünmez (FAZ 7). service include edilir (serviceName).
    */
   findByProject(
     projectId: string,
     options: PaginationOptions,
-  ): Promise<PaginatedResult<OTPLog>>;
+  ): Promise<PaginatedResult<OtpLogWithService>>;
   /**
    * Bir receiver'ın KENDİ kayıtlarını sayfalı döner (createdAt desc).
    * findByProject'in AKSİNE: sharingActive=false ve süresi dolmuş kayıtlar da GELİR

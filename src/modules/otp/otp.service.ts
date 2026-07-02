@@ -51,12 +51,13 @@ export class OtpService implements IOtpService {
     try {
       // 1) Servis çözümle (cache'li — dışarıdan her zaman await). Çözülemezse kova'ya
       //    fire-and-forget yaz ve serviceId: null ile devam et (OTP yine kaydedilir).
-      const serviceId = await this.serviceResolver.resolve(
+      const resolved = await this.serviceResolver.resolve(
         dto.projectId,
         dto.senderRaw,
         dto.serviceHint,
       );
-      if (serviceId === null) {
+      const serviceId = resolved?.id ?? null;
+      if (resolved === null) {
         this.recordUnmatchedSafely(dto.projectId, dto.senderRaw);
       }
 
@@ -74,6 +75,7 @@ export class OtpService implements IOtpService {
         deviceId: dto.deviceId,
         receiverId: dto.receiverId,
         serviceId: serviceId ?? undefined,
+        senderRaw: dto.senderRaw,
         expiresAt,
       });
 
@@ -84,11 +86,14 @@ export class OtpService implements IOtpService {
       );
 
       // 5) Yalnızca kayıt başarılıysa hedeflere anlık yayınla (SYNC).
+      //    serviceName (çözüldüyse) + senderRaw (fallback) taşınır ki canlı kart hemen etiketlensin.
       const deliveredTo = this.notifier.notify(targetUserIds, {
         id: saved.id,
         code: dto.code,
         source: saved.source,
         createdAt: saved.createdAt,
+        serviceName: resolved?.name ?? null,
+        senderRaw: dto.senderRaw,
       });
 
       this.logger.info(
@@ -118,12 +123,15 @@ export class OtpService implements IOtpService {
       });
 
       // Şifre çözme SYNC — map içinde her kayıt için uygulanır.
+      // serviceName çözüldüyse dolu; değilse developer satırı senderRaw'a düşer.
       const items: OtpHistoryItem[] = page.items.map((log) => ({
         id: log.id,
         code: this.encryptor.decrypt(log.encryptedCode),
         source: log.source,
         createdAt: log.createdAt,
         expiresAt: log.expiresAt,
+        serviceName: log.service?.name ?? null,
+        senderRaw: log.senderRaw,
       }));
 
       return ok({ items, pagination: page.pagination });
@@ -151,6 +159,7 @@ export class OtpService implements IOtpService {
         expiresAt: log.expiresAt,
         sharingActive: log.sharingActive,
         serviceName: log.service?.name ?? null,
+        senderRaw: log.senderRaw,
         deviceName: log.device?.deviceName ?? null,
       }));
 

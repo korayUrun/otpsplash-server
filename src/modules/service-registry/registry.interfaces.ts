@@ -29,6 +29,16 @@ export interface ServiceMutationResult {
   message: string;
 }
 
+/**
+ * Resolver eşleşme sonucu — çözülen servisin kimliği ve gösterim adı.
+ * `name` şemada nullable'dır ama aktif kuralların adı her zaman doludur (adlandırılınca aktive edilir);
+ * çağıran, cihaz ekranındaki canlı kartı anında etiketlemek için `name`'i kullanır.
+ */
+export interface ResolvedService {
+  id: string;
+  name: string | null;
+}
+
 // ───────────────────────── Repository veri şekilleri ─────────────────────────
 
 /** Manuel aktif kural oluşturmak için repository'ye verilen alanlar. */
@@ -83,14 +93,14 @@ export interface IServiceRegistryRepository {
  */
 export interface IServiceResolver {
   /**
-   * @returns Eşleşen servisin id'si; hiçbiri eşleşmezse `null` (çağıran kova'ya kaydeder).
+   * @returns Eşleşen servisin kimliği+adı; hiçbiri eşleşmezse `null` (çağıran kova'ya kaydeder).
    * `senderPattern` eşleşmesi `keywordPattern`'dan önceliklidir.
    */
   resolve(
     projectId: string,
     senderRaw: string,
     serviceHint?: string,
-  ): Promise<string | null>;
+  ): Promise<ResolvedService | null>;
 }
 
 /**

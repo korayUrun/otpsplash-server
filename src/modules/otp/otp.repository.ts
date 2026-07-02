@@ -4,6 +4,7 @@ import type {
   CreateOtpLogData,
   IOtpRepository,
   OtpLogWithRelations,
+  OtpLogWithService,
 } from './otp.interfaces';
 
 /**
@@ -24,12 +25,13 @@ export class PrismaOtpRepository implements IOtpRepository {
   /**
    * Projeye ait, süresi DOLMAMIŞ ve paylaşımı AÇIK kayıtları sayfalı döner (en yeni önce).
    * `sharingActive: false` (receiver durdurmuş) kayıtlar history'den düşer (FAZ 7).
+   * service include edilir → developer satırı serviceName ile etiketlenir (çözülemezse senderRaw'a düşer).
    * Toplam sayım ve veri çekme tek round-trip'te paralel (Promise.all).
    */
   async findByProject(
     projectId: string,
     options: PaginationOptions,
-  ): Promise<PaginatedResult<OTPLog>> {
+  ): Promise<PaginatedResult<OtpLogWithService>> {
     const where = {
       projectId,
       sharingActive: true,
@@ -40,6 +42,7 @@ export class PrismaOtpRepository implements IOtpRepository {
     const [items, total] = await Promise.all([
       this.prisma.oTPLog.findMany({
         where,
+        include: { service: true },
         orderBy: { createdAt: 'desc' },
         skip,
         take: options.limit,

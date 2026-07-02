@@ -53,7 +53,7 @@ describe('ServiceRegistryResolver.resolve', () => {
       'BINANCE',
     );
 
-    expect(result).toBe('binance');
+    expect(result).toEqual({ id: 'binance', name: 'Servis' });
   });
 
   it('senderPattern eşleşmiyor ama keywordPattern eşleşiyor → doğru serviceId', async () => {
@@ -68,7 +68,7 @@ describe('ServiceRegistryResolver.resolve', () => {
       'garanti kodunuz', // keywordPattern eşleşir
     );
 
-    expect(result).toBe('garanti');
+    expect(result).toEqual({ id: 'garanti', name: 'Servis' });
   });
 
   it('hiçbiri eşleşmiyor → null', async () => {
@@ -86,6 +86,20 @@ describe('ServiceRegistryResolver.resolve', () => {
     expect(result).toBeNull();
   });
 
+  it('çözülen servisin adı sonuçta taşınır (canlı kart etiketi için)', async () => {
+    const repo = buildRepo();
+    repo.findActiveRules.mockResolvedValue([
+      service({ id: 'binance', name: 'Binance', senderPattern: '^BINANCE$' }),
+    ]);
+
+    const result = await new ServiceRegistryResolver(repo, 0).resolve(
+      PROJECT_ID,
+      'BINANCE',
+    );
+
+    expect(result).toEqual({ id: 'binance', name: 'Binance' });
+  });
+
   it('senderPattern ve keywordPattern ikisi de eşleşebiliyorsa senderPattern kazanır', async () => {
     const repo = buildRepo();
     repo.findActiveRules.mockResolvedValue([
@@ -100,7 +114,7 @@ describe('ServiceRegistryResolver.resolve', () => {
       'kod',
     );
 
-    expect(result).toBe('by-sender');
+    expect(result).toEqual({ id: 'by-sender', name: 'Servis' });
   });
 
   it('cache süresi dolmadan ikinci çağrı → DB\'ye tekrar gitmez', async () => {

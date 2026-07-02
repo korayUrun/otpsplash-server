@@ -160,6 +160,7 @@ model OTPLog {
   receiver      User             @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
   serviceId     String?          @db.Uuid // çözümlenen servis — null ise hiç çözülemedi
   service       ServiceRegistry? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  senderRaw     String?          @db.VarChar(255) // ham gönderici kimliği — servis çözülemezse gösterilecek fallback etiket. SMS GÖVDESİ DEĞİL, yalnızca gönderici; "gövde backend'e gitmez" kuralını bozmaz.
   sharingActive Boolean          @default(true) // receiver bu OTP'nin paylaşımını durdurabilir
   createdAt     DateTime         @default(now())
   expiresAt     DateTime
