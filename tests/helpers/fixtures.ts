@@ -107,6 +107,8 @@ interface CreateOtpLogOptions {
   receiverId?: string;
   /** Developer'a gösterilecek ham gönderici etiketi. */
   senderRaw?: string;
+  /** Opsiyonel serbest metin bağlam etiketi. */
+  context?: string;
   sharingActive?: boolean;
 }
 
@@ -131,6 +133,7 @@ export async function createTestOtpLog(
       deviceId: opts.deviceId,
       receiverId,
       senderRaw: opts.senderRaw,
+      context: opts.context,
       sharingActive: opts.sharingActive ?? true,
     },
   });

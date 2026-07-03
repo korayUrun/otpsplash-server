@@ -7,7 +7,8 @@ import { CONSTANTS } from '@config/constants';
  * Parse cihazda yapılır; backend ham SMS metni (`smsText`) almaz. `code` cihazda parse
  * edilmiş 6 haneli koddur ve zorunludur; format kontrolü TEK YERDE burada (Zod) yapılır —
  * `otp.service` artık ayrıca `validate()` çağırmaz (DRY). `senderRaw` developer'a gösterilecek
- * gönderici etiketidir (zorunlu; SMS gövdesi değildir).
+ * gönderici etiketidir (zorunlu; SMS gövdesi değildir). `context` opsiyonel serbest metin
+ * bağlam etiketidir — gelmezse/null gelirse `null` olarak normalize edilir (tipi `string | null`).
  * `projectId`/`receiverId` body'de YOKTUR — doğrulanmış cihazdan alınır (proje izolasyonu + sahiplik).
  */
 export const processOtpSchema = z.object({
@@ -17,6 +18,11 @@ export const processOtpSchema = z.object({
     .regex(/^\d+$/, 'code yalnızca rakamlardan oluşmalı'),
   source: z.nativeEnum(Source),
   senderRaw: z.string().min(1).max(CONSTANTS.OTP.SENDER_MAX_LENGTH),
+  context: z
+    .string()
+    .max(CONSTANTS.OTP.CONTEXT_MAX_LENGTH)
+    .nullish()
+    .transform((value) => value ?? null),
 });
 
 /** `PATCH /api/otp/:id/sharing` ve `GET /api/otp/:id/sharing` path parametresi. */

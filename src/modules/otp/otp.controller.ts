@@ -31,6 +31,7 @@ export class OtpController {
       code: body.code,
       source: body.source,
       senderRaw: body.senderRaw,
+      context: body.context,
       projectId: req.device.projectId,
       deviceId: req.device.id,
       receiverId: req.device.userId,

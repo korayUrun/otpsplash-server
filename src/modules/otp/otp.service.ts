@@ -60,6 +60,7 @@ export class OtpService implements IOtpService {
         deviceId: dto.deviceId,
         receiverId: dto.receiverId,
         senderRaw: dto.senderRaw,
+        context: dto.context,
       });
 
       // 3) Routing: hedef developer'ları çöz (AWAIT). Kural yoksa boş liste → kimseye gitmez.
@@ -76,6 +77,7 @@ export class OtpService implements IOtpService {
         createdAt: saved.createdAt,
         sharingActive: saved.sharingActive,
         senderRaw: dto.senderRaw,
+        context: saved.context,
         receiver: this.toReceiverInfo(saved.receiver),
         device: this.toDeviceInfo(saved.device),
       };
@@ -188,6 +190,7 @@ export class OtpService implements IOtpService {
         createdAt: log.createdAt,
         sharingActive: log.sharingActive,
         senderRaw: log.senderRaw,
+        context: log.context,
         receiver: this.toReceiverInfo(log.receiver),
         device: this.toDeviceInfo(log.device),
       }));
@@ -268,6 +271,7 @@ export class OtpService implements IOtpService {
       source: log.source,
       createdAt: log.createdAt,
       senderRaw: log.senderRaw,
+      context: log.context,
       receiver: this.toReceiverInfo(log.receiver),
       device: this.toDeviceInfo(log.device),
     };

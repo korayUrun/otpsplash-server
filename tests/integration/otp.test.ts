@@ -202,6 +202,56 @@ describe('POST /api/otp', () => {
     expect(stored?.senderRaw).toBe('TESTSENDER');
   });
 
+  it('opsiyonel context gelirse saklanır', async () => {
+    const { deviceSecret, project } = await getDeviceSecret();
+
+    await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, deviceSecret)
+      .send({
+        code: '847291',
+        source: Source.ANDROID,
+        senderRaw: 'TESTSENDER',
+        context: 'Staging OTP',
+      });
+
+    const stored = await prisma.oTPLog.findFirst({
+      where: { projectId: project.id },
+    });
+    expect(stored?.context).toBe('Staging OTP');
+  });
+
+  it('context gelmezse null saklanır', async () => {
+    const { deviceSecret, project } = await getDeviceSecret();
+
+    await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, deviceSecret)
+      .send({ code: '847291', source: Source.ANDROID, senderRaw: 'TESTSENDER' });
+
+    const stored = await prisma.oTPLog.findFirst({
+      where: { projectId: project.id },
+    });
+    expect(stored?.context).toBeNull();
+  });
+
+  it('400 — context 120 karakteri aşarsa (VALIDATION_ERROR)', async () => {
+    const { deviceSecret } = await getDeviceSecret();
+
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, deviceSecret)
+      .send({
+        code: '847291',
+        source: Source.ANDROID,
+        senderRaw: 'TESTSENDER',
+        context: 'x'.repeat(CONSTANTS.OTP.CONTEXT_MAX_LENGTH + 1),
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   it('429 — rate limit aşılınca', async () => {
     const limit = CONSTANTS.RATE_LIMIT.OTP_MAX;
     let lastStatus = 0;
@@ -416,6 +466,7 @@ describe('GET /api/otp/history — DEVELOPER routing-süzülü feed', () => {
       deviceId: device.id,
       code: '111111',
       senderRaw: 'BINANCE',
+      context: 'Prod login testi',
     });
 
     const res = await request(app)
@@ -425,6 +476,7 @@ describe('GET /api/otp/history — DEVELOPER routing-süzülü feed', () => {
     expect(res.status).toBe(200);
     const item = res.body.data[0];
     expect(item.senderRaw).toBe('BINANCE');
+    expect(item.context).toBe('Prod login testi');
     expect(item.receiver).toEqual({
       name: 'Alice',
       email: expect.any(String),

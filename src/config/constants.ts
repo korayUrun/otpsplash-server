@@ -18,6 +18,8 @@ export const CONSTANTS = {
     SEPARATOR: ':',
     /** senderRaw etiketinin üst sınırı (karakter) — DB otp_logs.senderRaw VarChar(255) ile hizalı. */
     SENDER_MAX_LENGTH: 255,
+    /** Opsiyonel context etiketinin üst sınırı (karakter) — DB otp_logs.context VarChar(120) ile hizalı. */
+    CONTEXT_MAX_LENGTH: 120,
   },
   ARGON2: {
     /** OWASP 2024 önerisi — argon2id. */
@@ -63,5 +65,15 @@ export const CONSTANTS = {
     NAME_MAX_LENGTH: 100,
     /** Telefon numarası üst sınırı — DB şemasındaki VarChar(32) ile hizalı. */
     PHONE_MAX_LENGTH: 32,
+  },
+  SENDER_PATTERN: {
+    /**
+     * `GET /api/otp/sender-patterns` Cache-Control — ortama göre seçilir (controller):
+     *  - PROD: liste statik olduğundan kısa süreli cache güvenli (proxy/CDN yararlanır).
+     *  - DEV/TEST: `no-store` — iOS Shortcut/URLSession cevabı ~5 dk cache'leyip pattern
+     *    değişikliklerinde eski listeyi göstermesin (aksi halde test sırasında kafa karıştırır).
+     */
+    CACHE_CONTROL_PROD: 'public, max-age=300',
+    CACHE_CONTROL_DEV: 'no-store',
   },
 } as const;

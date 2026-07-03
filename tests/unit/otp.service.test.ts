@@ -58,6 +58,7 @@ const baseDto = {
   code: '123456',
   source: Source.ANDROID,
   senderRaw: 'BINANCE',
+  context: null,
   projectId: PROJECT_ID,
   deviceId: DEVICE_ID,
   receiverId: RECEIVER_ID,
@@ -73,6 +74,7 @@ function otpLog(overrides: Partial<OTPLog> = {}): OTPLog {
     deviceId: DEVICE_ID,
     receiverId: RECEIVER_ID,
     senderRaw: 'BINANCE',
+    context: null,
     sharingActive: true,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     ...overrides,
@@ -176,6 +178,21 @@ describe('OtpService.processAndDeliver', () => {
     expect(notifyArg.sharingActive).toBe(true);
     // Sahibi receiver kendi odasına AYNI payload'ı alır (deliveredTo'ya sayılmaz).
     expect(m.notifier.notifyReceiver).toHaveBeenCalledWith(RECEIVER_ID, notifyArg);
+  });
+
+  it('opsiyonel context DTO → save → emit payload zincirinde taşınır', async () => {
+    const m = buildMocks();
+    m.encryptor.encrypt.mockReturnValue('iv:tag:ct');
+    m.repository.save.mockResolvedValue(savedLog({ context: 'Login akışı' }));
+    m.routing.resolveTargets.mockResolvedValue([DEV_A]);
+    m.notifier.notify.mockReturnValue(1);
+
+    await buildService(m).processAndDeliver({ ...baseDto, context: 'Login akışı' });
+
+    const saveArg = m.repository.save.mock.calls[0]?.[0] as CreateOtpLogData;
+    expect(saveArg.context).toBe('Login akışı');
+    const notifyArg = m.notifier.notify.mock.calls[0]?.[1] as OtpNotification;
+    expect(notifyArg.context).toBe('Login akışı');
   });
 
   it('kural yok → kimseye gitmez ama OTP yine kaydedilir (deliveredTo 0)', async () => {

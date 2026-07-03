@@ -17,6 +17,8 @@ export interface ProcessOtpDTO {
   source: Source;
   /** Ham gönderici kimliği — developer'a gösterilecek etiket (zorunlu). */
   senderRaw: string;
+  /** Opsiyonel serbest metin bağlam etiketi — gelmezse `null`. */
+  context: string | null;
   projectId: string;
   /** OTP'yi gönderen cihaz (Device Secret ile doğrulandı) — kaynak izleme/analiz. */
   deviceId: string;
@@ -82,6 +84,8 @@ export interface OtpHistoryItem {
   createdAt: Date;
   /** Ham gönderici kimliği — developer'a gösterilecek etiket; eski kayıtlarda null. */
   senderRaw: string | null;
+  /** Opsiyonel serbest metin bağlam etiketi; gelmediyse/eski kayıtlarda null. */
+  context: string | null;
   receiver: OtpReceiverInfo;
   device: OtpDeviceInfo | null;
 }
@@ -95,6 +99,8 @@ export interface ReceiverOtpHistoryItem {
   sharingActive: boolean;
   /** Ham gönderici kimliği; eski kayıtlarda null. */
   senderRaw: string | null;
+  /** Opsiyonel serbest metin bağlam etiketi; gelmediyse/eski kayıtlarda null. */
+  context: string | null;
   receiver: OtpReceiverInfo;
   device: OtpDeviceInfo | null;
 }
@@ -130,6 +136,8 @@ export interface CreateOtpLogData {
   receiverId: string;
   /** Ham gönderici kimliği — developer'a gösterilecek etiket olarak kalıcılaştırılır. */
   senderRaw?: string;
+  /** Opsiyonel serbest metin bağlam etiketi — gelmezse null olarak kalıcılaştırılır. */
+  context?: string | null;
 }
 
 /** Socket üzerinden developer + sahibi receiver ekranına anlık yayınlanan OTP yükü (düz kod). */
@@ -143,6 +151,8 @@ export interface OtpNotification {
   sharingActive: boolean;
   /** Ham gönderici kimliği — developer'a gösterilecek etiket (POST'ta hep dolu). */
   senderRaw: string;
+  /** Opsiyonel serbest metin bağlam etiketi — gelmezse null. */
+  context: string | null;
   receiver: OtpReceiverInfo;
   device: OtpDeviceInfo | null;
 }

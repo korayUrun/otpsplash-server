@@ -14,6 +14,8 @@ import { OtpController } from './otp.controller';
 import { AesGcmOtpEncryptor } from './otp.encryptor';
 import { PrismaOtpRepository } from './otp.repository';
 import { OtpService } from './otp.service';
+import { SenderPatternController } from './sender-pattern.controller';
+import { StaticSenderPatternProvider } from './sender-pattern.provider';
 import {
   dismissOtpsSchema,
   historyQuerySchema,
@@ -36,6 +38,12 @@ const otpService = new OtpService(
 );
 const controller = new OtpController(otpService);
 
+// Gönderici kalıpları statik konfigten (v1) sağlanır; provider arayüzü v2 DB'ye geçişi
+// controller'ı değiştirmeden mümkün kılar (DIP/OCP).
+const senderPatternController = new SenderPatternController(
+  new StaticSenderPatternProvider(),
+);
+
 export const otpRouter: Router = Router();
 
 // Rate limit en başta (IP bazlı, auth'tan önce).
@@ -48,6 +56,12 @@ otpRouter.post(
   validate(processOtpSchema),
   asyncHandler(controller.process),
 );
+
+// Gönderici kalıpları (PUBLIC — auth yok). iOS Shortcut/Android bu listeyi çeker, her pattern'i
+// CİHAZDA SMS gövdesine dener; eşleşirse senderRaw=name yapıp POST /api/otp'ye gönderir (gövde
+// backend'e gitmez). Yanıt BARE dizidir (standart zarf YOK) — shortcut sözleşmesi. Handler saf sync.
+// Tek segmentli literal yol; `/:id/sharing` (iki segment) ile çakışmaz.
+otpRouter.get('/sender-patterns', senderPatternController.list);
 
 // Geçmiş (rol-duyarlı, controller dallanır): DEVELOPER kendi feed'i, RECEIVER kendi kodları,
 // ADMIN projedeki tüm receiver'lardan gelen tüm OTP'ler (özet ekranı).

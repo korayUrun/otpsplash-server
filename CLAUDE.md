@@ -554,12 +554,13 @@ DELETE /api/devices/:id       → 200 { message }                  [JWT — RECE
 GET    /api/devices           → 200 Device[] (secretHash hariç, deviceName/phoneNumber dahil) [JWT — RECEIVER]
 
 POST /api/otp                 → 200 { message, deliveredTo }   [Device Secret — X-Device-Secret header]
-                                Body: { code, source, senderRaw }  (serviceHint YOK)
+                                Body: { code, source, senderRaw, context? }  (serviceHint YOK)
+                                context: opsiyonel serbest metin (≤120), gelmezse null — saklanır + history/otp:received'e eklenir
 GET  /api/otp/history         → 200 paginated (rol-duyarlı):
                                   DEVELOPER → kendisine yönlendirilen, dismiss'lemediği feed
                                   RECEIVER  → kendi geçmişi (sharingActive dahil)
                                   ADMIN     → projedeki TÜM receiver'lardan gelen tüm OTP'ler (özet)
-                                item: { id, code, source, senderRaw, createdAt,          (OTP süresiz — expiresAt YOK)
+                                item: { id, code, source, senderRaw, context, createdAt,  (OTP süresiz — expiresAt YOK)
                                         receiver:{ name, email, phoneNumber }, device:{ name }|null,
                                         (RECEIVER'da ayrıca sharingActive) }  [JWT — DEVELOPER|RECEIVER|ADMIN]
 POST /api/otp/dismiss         → 200 { dismissed: number }      [JWT — DEVELOPER]
@@ -567,6 +568,10 @@ POST /api/otp/dismiss         → 200 { dismissed: number }      [JWT — DEVELO
                                 (per-developer yumuşak gizleme; receiver/admin görmeye devam eder, kalıcı silme değil)
 PATCH /api/otp/:id/sharing    → 200 { sharingActive }          [JWT — RECEIVER, OTP'nin sahibi]
 GET  /api/otp/:id/sharing     → 200 { targets: [...] }         [JWT — RECEIVER, salt-okunur, kimlerle paylaşılıyor]
+GET  /api/otp/sender-patterns → 200 [{ name, pattern }]        [PUBLIC — auth yok]
+                                Statik konfig (v1, src/config/senderPatterns.ts). BARE dizi döner (standart zarf DEĞİL —
+                                iOS Shortcut sözleşmesi). Cihaz SMS gövdesini bu kalıplarla eşleştirip senderRaw=name ile
+                                POST /api/otp'ye gönderir; gövde backend'e gelmez. Yalnızca isActive kayıtlar, order'a göre sıralı.
 
 POST   /api/projects               → 201 Project               [JWT — ADMIN]
 GET    /api/projects/:id           → 200 Project + users       [JWT — üye]
@@ -591,11 +596,14 @@ GET /health                   → 200 { status: 'ok', timestamp }
 
 ### POST /api/otp — Body
 ```
-{ code: string (6 haneli), source: 'ANDROID'|'IOS_SHORTCUT', senderRaw: string }
+{ code: string (6 haneli), source: 'ANDROID'|'IOS_SHORTCUT', senderRaw: string, context?: string|null }
 ```
 `smsText` body'de YOKTUR — parse cihazda yapılır (bkz. "Proje" bölümündeki "Parse yeri kararı" notu).
 `code` ve `senderRaw` zorunludur. `senderRaw` developer'a gösterilen gönderici etiketidir; servise
 çözülmez, dağıtımı etkilemez. (`serviceHint` kaldırıldı — servis kavramı yok.)
+`context` opsiyoneldir (serbest metin, ≤120 karakter): gelmezse/null gelirse `null` olarak saklanır;
+dağıtımı/routing'i etkilemez. Kalıcılaştırılır ve `GET /api/otp/history` item'ına + `otp:received`
+socket payload'ına eklenir (developer + sahibi receiver görür).
 
 ---
 

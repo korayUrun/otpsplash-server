@@ -142,6 +142,7 @@ model OTPLog {
   receiverId    String         @db.Uuid // SAHİPLİK KAYNAĞI — deviceId silinse bile kalıcı
   receiver      User           @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
   senderRaw     String?        @db.VarChar(255) // ham gönderici kimliği — developer'a gösterilecek etiket. SMS GÖVDESİ DEĞİL, yalnızca gönderici.
+  context       String?        @db.VarChar(120) // opsiyonel serbest metin bağlam etiketi (cihazdan gelir; gelmezse null)
   sharingActive Boolean        @default(true) // receiver bu OTP'nin paylaşımını durdurabilir
   dismissals    OtpDismissal[] // developer'ların kendi feed'inden kaldırdığı işaretler
   createdAt     DateTime       @default(now())
