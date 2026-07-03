@@ -18,10 +18,11 @@ model User {
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   devices      Device[]
   groupMembers GroupMember[]
-  routingRules RoutingRule[] @relation("ReceiverRules")
-  receivedOtps OTPLog[]      @relation("ReceiverOtps") // sahiplik kanıtı — deviceId'den bağımsız
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  routingRules RoutingRule[]  @relation("ReceiverRules")
+  receivedOtps OTPLog[]       @relation("ReceiverOtps") // sahiplik kanıtı — deviceId'den bağımsız
+  dismissals   OtpDismissal[] @relation("DeveloperDismissals") // developer'ın kendi feed'inden kaldırdığı OTP'ler
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   @@index([email])
   @@index([projectId])
@@ -128,26 +129,44 @@ model RoutingRule {
 // Bu DB seviyesi koruma, routing.service.ts'teki createRule'da yapılan açık "zaten var mı"
 // kontrolünün YERİNE değil, ONUN YANINDA çalışır — çift katmanlı korunur.
 
+// OTP kodları SÜRESİZDİR — expiresAt yoktur, otomatik silme (cron) yoktur.
+// Developer istediğinde kendi feed'inden OtpDismissal ile kaldırır (kalıcı silme değil).
 model OTPLog {
-  id            String   @id @default(uuid()) @db.Uuid
-  encryptedCode String   @db.VarChar(512) // iv:authTag:ciphertext (base64)
+  id            String         @id @default(uuid()) @db.Uuid
+  encryptedCode String         @db.VarChar(512) // iv:authTag:ciphertext (base64)
   source        Source
-  projectId     String   @db.Uuid
-  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  deviceId      String?  @db.Uuid // izleme/analiz amaçlı — onDelete: SetNull
-  device        Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
-  receiverId    String   @db.Uuid // SAHİPLİK KAYNAĞI — deviceId silinse bile kalıcı
-  receiver      User     @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
-  senderRaw     String?  @db.VarChar(255) // ham gönderici kimliği — developer'a gösterilecek etiket. SMS GÖVDESİ DEĞİL, yalnızca gönderici; "gövde backend'e gitmez" kuralını bozmaz.
-  sharingActive Boolean  @default(true) // receiver bu OTP'nin paylaşımını durdurabilir
-  createdAt     DateTime @default(now())
-  expiresAt     DateTime
+  projectId     String         @db.Uuid
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deviceId      String?        @db.Uuid // izleme/analiz amaçlı — onDelete: SetNull
+  device        Device?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  receiverId    String         @db.Uuid // SAHİPLİK KAYNAĞI — deviceId silinse bile kalıcı
+  receiver      User           @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
+  senderRaw     String?        @db.VarChar(255) // ham gönderici kimliği — developer'a gösterilecek etiket. SMS GÖVDESİ DEĞİL, yalnızca gönderici.
+  sharingActive Boolean        @default(true) // receiver bu OTP'nin paylaşımını durdurabilir
+  dismissals    OtpDismissal[] // developer'ların kendi feed'inden kaldırdığı işaretler
+  createdAt     DateTime       @default(now())
 
   @@index([projectId])
-  @@index([expiresAt])
   @@index([deviceId])
   @@index([receiverId])
   @@map("otp_logs")
+}
+
+// Developer bir OTP'yi KENDİ feed'inden kaldırdığında oluşur (per-developer, yumuşak gizleme).
+// Kalıcı silme DEĞİLDİR: OTP tabloda kalır — receiver kendi geçmişinde, admin özet ekranında
+// görmeye devam eder; sadece bu developer'ın history'sinden düşer. Aynı OTP grup üzerinden
+// başka developer'lara gittiyse onları etkilemez.
+model OtpDismissal {
+  id        String   @id @default(uuid()) @db.Uuid
+  otpId     String   @db.Uuid
+  otp       OTPLog   @relation(fields: [otpId], references: [id], onDelete: Cascade)
+  userId    String   @db.Uuid // kaldıran DEVELOPER
+  user      User     @relation("DeveloperDismissals", fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([otpId, userId]) // aynı OTP bir developer için iki kez kaldırılamaz
+  @@index([userId])
+  @@map("otp_dismissals")
 }
 
 enum Role {

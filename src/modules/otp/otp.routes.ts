@@ -15,6 +15,7 @@ import { AesGcmOtpEncryptor } from './otp.encryptor';
 import { PrismaOtpRepository } from './otp.repository';
 import { OtpService } from './otp.service';
 import {
+  dismissOtpsSchema,
   historyQuerySchema,
   processOtpSchema,
   sharingParamsSchema,
@@ -48,13 +49,23 @@ otpRouter.post(
   asyncHandler(controller.process),
 );
 
-// Geçmiş: DEVELOPER kendi proje feed'ini, RECEIVER kendi kodlarını görür (controller rol'e göre dallanır).
+// Geçmiş (rol-duyarlı, controller dallanır): DEVELOPER kendi feed'i, RECEIVER kendi kodları,
+// ADMIN projedeki tüm receiver'lardan gelen tüm OTP'ler (özet ekranı).
 otpRouter.get(
   '/history',
   authenticate,
-  authorize(Role.DEVELOPER, Role.RECEIVER),
+  authorize(Role.DEVELOPER, Role.RECEIVER, Role.ADMIN),
   validate(historyQuerySchema, 'query'),
   asyncHandler(controller.history),
+);
+
+// DEVELOPER seçtiği OTP'leri KENDİ feed'inden kaldırır (yumuşak gizleme; receiver/admin görmeye devam eder).
+otpRouter.post(
+  '/dismiss',
+  authenticate,
+  authorize(Role.DEVELOPER),
+  validate(dismissOtpsSchema),
+  asyncHandler(controller.dismiss),
 );
 
 // Bir OTP'nin kimlerle paylaşıldığı (salt-okunur) — yalnızca OTP'nin sahibi RECEIVER.

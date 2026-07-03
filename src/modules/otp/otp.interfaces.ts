@@ -48,6 +48,11 @@ export interface GetReceiverHistoryDTO extends PaginationOptions {
   projectId: string;
 }
 
+/** Admin özet sorgusu — projedeki TÜM receiver'lardan gelen tüm OTP'ler. */
+export interface GetAllOtpDTO extends PaginationOptions {
+  projectId: string;
+}
+
 /** OTP'yi üreten receiver'ın kimlik bilgisi (developer'a "kimden geldi" gösterimi). */
 export interface OtpReceiverInfo {
   /** Görünen ad; opsiyonel. Mobil `name ?? email` fallback yapar. */
@@ -66,13 +71,15 @@ export interface OtpDeviceInfo {
   name: string | null;
 }
 
-/** Geçmiş kaydının client'a dönülen, şifresi çözülmüş görünümü (developer). */
+/**
+ * Geçmiş kaydının client'a dönülen, şifresi çözülmüş görünümü (developer + admin özeti).
+ * OTP süresiz olduğundan `expiresAt` yoktur; `createdAt` "ne zaman geldi" bilgisidir.
+ */
 export interface OtpHistoryItem {
   id: string;
   code: string;
   source: Source;
   createdAt: Date;
-  expiresAt: Date;
   /** Ham gönderici kimliği — developer'a gösterilecek etiket; eski kayıtlarda null. */
   senderRaw: string | null;
   receiver: OtpReceiverInfo;
@@ -85,7 +92,6 @@ export interface ReceiverOtpHistoryItem {
   code: string;
   source: Source;
   createdAt: Date;
-  expiresAt: Date;
   sharingActive: boolean;
   /** Ham gönderici kimliği; eski kayıtlarda null. */
   senderRaw: string | null;
@@ -108,6 +114,11 @@ export interface SharingTargetsResult {
   targets: TargetUser[];
 }
 
+/** `POST /api/otp/dismiss` çıktısı — bu istekte yeni kaldırılan OTP sayısı. */
+export interface DismissOtpsResult {
+  dismissed: number;
+}
+
 /** Repository'ye kaydetmek için gereken alanlar (id/createdAt DB tarafından üretilir). */
 export interface CreateOtpLogData {
   encryptedCode: string;
@@ -119,7 +130,6 @@ export interface CreateOtpLogData {
   receiverId: string;
   /** Ham gönderici kimliği — developer'a gösterilecek etiket olarak kalıcılaştırılır. */
   senderRaw?: string;
-  expiresAt: Date;
 }
 
 /** Socket üzerinden developer + sahibi receiver ekranına anlık yayınlanan OTP yükü (düz kod). */
@@ -127,9 +137,8 @@ export interface OtpNotification {
   id: string;
   code: string;
   source: Source;
+  /** OTP'nin geldiği an — client "ne zaman/saat kaçta" bilgisini bundan gösterir (süre yok). */
   createdAt: Date;
-  /** 90 sn TTL sonu — canlı kartın geri sayımı için (hem developer hem receiver kullanır). */
-  expiresAt: Date;
   /** Yeni OTP her zaman paylaşımda (true) — receiver kartının toggle durumunu doğru göstermek için. */
   sharingActive: boolean;
   /** Ham gönderici kimliği — developer'a gösterilecek etiket (POST'ta hep dolu). */
@@ -178,19 +187,28 @@ export interface IOtpRepository {
   findById(id: string): Promise<OTPLog | null>;
   /**
    * Bir developer'ın görmeye yetkili olduğu kayıtları sayfalı döner (createdAt desc).
-   * Süresi dolmamış + paylaşımı AÇIK (`sharingActive:true`) kayıtlar arasından yalnızca
-   * verilen receiver'lara ait olanlar gelir — canlı emit'in routing çözümüyle hizalı.
-   * `receiverIds` boşsa çağrılmamalıdır (service katmanı kısa devre yapar).
+   * Paylaşımı AÇIK (`sharingActive:true`) + bu developer'ın KENDİ feed'inden kaldırMADIĞI
+   * (dismissal yok) + yalnızca verilen receiver'lara ait kayıtlar gelir. OTP süresiz olduğundan
+   * expiry filtresi YOKTUR. `receiverIds` boşsa çağrılmamalıdır (service kısa devre yapar).
    * receiver + device include edilir.
    */
   findForDeveloper(
     projectId: string,
+    developerId: string,
     receiverIds: string[],
     options: PaginationOptions,
   ): Promise<PaginatedResult<OtpLogWithRelations>>;
   /**
+   * Projedeki TÜM OTP'leri sayfalı döner (createdAt desc) — admin özet ekranı.
+   * Filtre YOKTUR: tüm receiver'lardan, sharing/dismissal durumundan bağımsız hepsi gelir.
+   */
+  findAllForProject(
+    projectId: string,
+    options: PaginationOptions,
+  ): Promise<PaginatedResult<OtpLogWithRelations>>;
+  /**
    * Bir receiver'ın KENDİ kayıtlarını sayfalı döner (createdAt desc).
-   * findForDeveloper'ın AKSİNE: sharingActive=false ve süresi dolmuş kayıtlar da GELİR
+   * findForDeveloper'ın AKSİNE: sharingActive=false kayıtlar da GELİR
    * (receiver kendi kodlarını görüp paylaşımı yönetebilmeli). receiver + device include edilir.
    */
   findByReceiver(
@@ -199,8 +217,16 @@ export interface IOtpRepository {
   ): Promise<PaginatedResult<OtpLogWithRelations>>;
   /** Paylaşım durumunu günceller (sahiplik service'te receiverId ile doğrulanır). */
   updateSharingActive(otpId: string, isActive: boolean): Promise<OTPLog>;
-  /** Süresi geçmiş tüm kayıtları siler; silinen kayıt sayısını döner. */
-  deleteExpired(): Promise<number>;
+  /**
+   * Verilen OTP'leri bir developer'ın feed'inden kaldırır (per-developer yumuşak gizleme).
+   * Yalnızca projede gerçekten var olan id'ler işlenir; zaten kaldırılmışlar atlanır.
+   * @returns Bu çağrıda YENİ kaldırılan (dismissal eklenen) OTP sayısı.
+   */
+  dismissForDeveloper(
+    projectId: string,
+    developerId: string,
+    otpIds: string[],
+  ): Promise<number>;
 }
 
 /**
@@ -231,10 +257,23 @@ export interface IOtpNotifier {
 export interface IOtpService {
   processAndDeliver(dto: ProcessOtpDTO): Promise<Result<ProcessOtpResult>>;
   getHistory(dto: GetHistoryDTO): Promise<Result<PaginatedResult<OtpHistoryItem>>>;
+  /** Admin özet: projedeki tüm receiver'lardan gelen tüm OTP'ler (filtresiz). */
+  getAllForProject(
+    dto: GetAllOtpDTO,
+  ): Promise<Result<PaginatedResult<OtpHistoryItem>>>;
   /** Receiver'ın kendi OTP geçmişi (paylaşım durumu + cihaz adıyla). */
   getReceiverHistory(
     dto: GetReceiverHistoryDTO,
   ): Promise<Result<PaginatedResult<ReceiverOtpHistoryItem>>>;
+  /**
+   * Developer verilen OTP'leri KENDİ feed'inden kaldırır (yumuşak gizleme, per-developer).
+   * Kalıcı silme değildir — receiver/admin görmeye devam eder.
+   */
+  dismissForDeveloper(
+    developerId: string,
+    projectId: string,
+    otpIds: string[],
+  ): Promise<Result<DismissOtpsResult>>;
   /**
    * OTP paylaşımını aç/kapat. Sahiplik `OTPLog.receiverId` üzerinden doğrulanır
    * (deviceId null olsa bile çalışır). Kapatıldığında hedef developer'lara `otp:revoked` gider.

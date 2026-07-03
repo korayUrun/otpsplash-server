@@ -75,7 +75,6 @@ function otpLog(overrides: Partial<OTPLog> = {}): OTPLog {
     senderRaw: 'BINANCE',
     sharingActive: true,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
-    expiresAt: new Date('2026-01-08T00:00:00.000Z'),
     ...overrides,
   };
 }
@@ -103,9 +102,10 @@ function buildMocks(): Mocks {
       save: jest.fn(),
       findById: jest.fn(),
       findForDeveloper: jest.fn(),
+      findAllForProject: jest.fn(),
       findByReceiver: jest.fn(),
       updateSharingActive: jest.fn(),
-      deleteExpired: jest.fn(),
+      dismissForDeveloper: jest.fn(),
     },
     notifier: {
       notify: jest.fn(),
@@ -170,7 +170,9 @@ describe('OtpService.processAndDeliver', () => {
       phoneNumber: '+905551112233',
     });
     expect(notifyArg.device).toEqual({ name: 'İş Telefonum' });
-    expect(notifyArg.expiresAt).toEqual(savedLog().expiresAt);
+    // OTP süresiz — payload'da expiresAt yok, createdAt (ne zaman geldi) var.
+    expect(notifyArg).not.toHaveProperty('expiresAt');
+    expect(notifyArg.createdAt).toEqual(savedLog().createdAt);
     expect(notifyArg.sharingActive).toBe(true);
     // Sahibi receiver kendi odasına AYNI payload'ı alır (deliveredTo'ya sayılmaz).
     expect(m.notifier.notifyReceiver).toHaveBeenCalledWith(RECEIVER_ID, notifyArg);
@@ -357,10 +359,11 @@ describe('OtpService.getHistory', () => {
       expect(result.data.items[0]?.device).toEqual({ name: 'İş Telefonum' });
       expect(result.data.pagination.total).toBe(1);
     }
-    // Kapsam developer'ın id'siyle çözülür, sorgu bu receiver listesiyle proje içinde koşar.
+    // Kapsam developer'ın id'siyle çözülür, sorgu developerId (dismiss filtresi) + receiver listesiyle koşar.
     expect(m.routing.resolveVisibleReceiverIds).toHaveBeenCalledWith(DEV_A);
     expect(m.repository.findForDeveloper).toHaveBeenCalledWith(
       PROJECT_ID,
+      DEV_A,
       [RECEIVER_ID],
       options,
     );
@@ -399,5 +402,54 @@ describe('OtpService.getHistory', () => {
         ...options,
       }),
     ).rejects.toThrow('DB down');
+  });
+});
+
+describe('OtpService.getAllForProject (admin özeti)', () => {
+  const options: PaginationOptions = { page: 1, limit: 20 };
+
+  it('projedeki tüm OTP\'leri filtresiz döner (routing çözümü YOK)', async () => {
+    const m = buildMocks();
+    m.repository.findAllForProject.mockResolvedValue({
+      items: [savedLog({ encryptedCode: 'enc-1', senderRaw: 'BINANCE' })],
+      pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+    });
+    m.encryptor.decrypt.mockReturnValue('123456');
+
+    const result = await buildService(m).getAllForProject({
+      projectId: PROJECT_ID,
+      ...options,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.items[0]?.code).toBe('123456');
+      expect(result.data.items[0]?.receiver.email).toBe('receiver@test.com');
+    }
+    // Admin özeti routing'e bakmaz — doğrudan projeyi çeker.
+    expect(m.routing.resolveVisibleReceiverIds).not.toHaveBeenCalled();
+    expect(m.repository.findAllForProject).toHaveBeenCalledWith(PROJECT_ID, options);
+  });
+});
+
+describe('OtpService.dismissForDeveloper', () => {
+  it('repository\'ye iletir ve kaldırılan sayısını döner', async () => {
+    const m = buildMocks();
+    m.repository.dismissForDeveloper.mockResolvedValue(2);
+
+    const result = await buildService(m).dismissForDeveloper(DEV_A, PROJECT_ID, [
+      OTP_ID,
+      'another-id',
+    ]);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.dismissed).toBe(2);
+    }
+    expect(m.repository.dismissForDeveloper).toHaveBeenCalledWith(
+      PROJECT_ID,
+      DEV_A,
+      [OTP_ID, 'another-id'],
+    );
   });
 });

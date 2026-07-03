@@ -16,6 +16,7 @@
 [~] FAZ 8 — Servis Tespiti ve Kayıt Defteri (GERİ ALINDI — bkz. "Routing Sadeleştirme" bölümü)
 [x] Fiziksel Cihaz Testi Düzeltmeleri (madde 3/6/11) — aşağıdaki bölüme bak
 [x] Routing Sadeleştirme — servis kavramı kaldırıldı (bkz. aşağıdaki bölüm)
+[x] OTP Süresiz + Developer Dismissal + Admin Özet (bkz. aşağıdaki bölüm; madde 3'ün 90 sn TTL'i GERİ ALINDI)
 ```
 
 > **FAZ 8 GERİ ALINDI (Routing Sadeleştirme):** service-registry modülü, `ServiceRegistry`
@@ -650,6 +651,34 @@ gitsin" yeterli. `senderRaw` yine developer'a "kimden geldi" etiketi olarak gös
 - [x] History/socket payload `receiver{name,email,phoneNumber}` + `device{name}` taşıyor
 - [x] `/api/service-registry*` uçları ve service-registry modülü yok
 - [x] `npm run typecheck` + `npm run lint` + `npm run build` temiz, `npm test` (189 test) geçiyor
+
+---
+
+## OTP Süresiz + Developer Dismissal + Admin Özet
+
+**Hedef:** OTP kodları süresiz olsun (otomatik silme yok), developer feed'ini kendi yönetsin,
+admin uygulamaya gelen tüm OTP'leri tek ekranda görsün.
+
+**Yapılanlar:**
+- **Süresizlik:** `OTPLog.expiresAt` sütunu + index'i kaldırıldı; `TTL_SECONDS` sabiti,
+  `OTP_TTL_DAYS` env'i ve node-cron cleanup job'ı (`src/jobs/`) tamamen silindi. `findForDeveloper`
+  artık expiry filtrelemez; payload/history'den `expiresAt` çıktı — satırda `createdAt` gösterilir.
+- **Developer dismissal:** yeni `OtpDismissal` tablosu (`otpId + userId`, unique). `POST /api/otp/dismiss
+  { otpIds }` [DEVELOPER] seçilen OTP'leri developer'ın KENDİ feed'inden kaldırır (per-developer
+  yumuşak gizleme — kalıcı silme değil; receiver/admin görmeye devam eder). `findForDeveloper`
+  `dismissals: { none: { userId } }` ile bu kayıtları hariç tutar.
+- **Admin özet:** `GET /api/otp/history` artık ADMIN'e de açık — controller rol'e göre dallanır,
+  ADMIN → `getAllForProject` (projedeki tüm receiver'lardan gelen tüm OTP'ler, filtresiz).
+- Migration: `20260703090000_remove_otp_expiry_add_dismissal`.
+
+**Tamamlanma Kriterleri:**
+- [x] OTP'lerin `expiresAt`'i yok; eski `createdAt`'li kayıt bile feed'de kalır (otomatik düşmez)
+- [x] Cleanup cron / node-cron kod tabanında yok
+- [x] `POST /api/otp/dismiss` developer feed'inden kaldırır; receiver/admin görmeye devam eder
+- [x] Aynı OTP tekrar dismiss → idempotent (dismissed:0); RECEIVER dismiss edemez (403)
+- [x] ADMIN `GET /api/otp/history` → tüm receiver'ların OTP'leri (sharing-off dahil), proje izole
+- [x] Payload/history `createdAt` taşır, `expiresAt` taşımaz
+- [x] `npm run typecheck` + `lint` + `build` temiz, `npm test` (193 test) geçiyor
 
 ---
 

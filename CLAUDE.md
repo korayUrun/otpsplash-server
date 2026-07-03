@@ -69,7 +69,7 @@ Katman 2 — Dağıtım (backend'de, admin kuralına göre otomatik)
 | Şifreleme | Node.js crypto | AES-256-GCM, native |
 | Logging | pino | JSON structured, redact zorunlu |
 | Rate limiting | express-rate-limit | In-memory yeterli |
-| Cron | node-cron | TTL cleanup |
+| Cron | — | (OTP süresiz — cleanup job kaldırıldı) |
 | Test | Jest + Supertest | Unit + integration |
 | Güvenlik | helmet + cors | — |
 
@@ -236,12 +236,17 @@ ile DB seviyesinde garanti edilir; seed demo projeyi varsayılan işaretler. Rol
 RECEIVER/DEVELOPER olabilir — **ADMIN self-register edemez** (Zod refine + service guard, çift
 katman). Varsayılan proje tanımlı değilse kayıt 404 PROJECT_NOT_FOUND döner (kurulum hatası).
 
-### OTP Geçerlilik Süresi — Sabit 90 sn (env değil)
-OTP `expiresAt = createdAt + 90 sn`, `CONSTANTS.OTP.TTL_SECONDS` sabitinden hesaplanır —
-env ile değiştirilemez (`OTP_TTL_DAYS` kaldırıldı). Mobil bu değere göre geri sayar. 90 sn
-dolunca kod developer canlı feed'inden (`findByProject` filtresi `expiresAt > now`) düşer,
-ama receiver kendi geçmişinde görmeye devam eder (`findByReceiver`'da expiry filtresi yok).
-Cleanup cron süresi geçmiş satırları yine günde bir siler.
+### OTP Süresiz — Otomatik Silme Yok, Developer Kendi Kaldırır
+OTP kodlarının **geçerlilik süresi yoktur** (`OTPLog.expiresAt` sütunu kaldırıldı) ve **süre
+dolunca otomatik silme yoktur** (node-cron cleanup job kaldırıldı). Kodlar geldikleri sırayla
+(en yeni önce) feed'de birikir; developer'a satırda `createdAt` (ne zaman/saat kaçta geldiği)
+gösterilir. `TTL_SECONDS` sabiti ve `OTP_TTL_DAYS` env'i kod tabanında yoktur.
+
+Bir developer feed'i temizlemek istediğinde ilgili OTP'leri seçip `POST /api/otp/dismiss` ile
+kaldırır. Bu **per-developer yumuşak gizlemedir** (`OtpDismissal` tablosu), kalıcı silme değildir:
+OTP tabloda kalır — receiver kendi geçmişinde, admin özet ekranında görmeye devam eder; aynı OTP
+grup üzerinden başka developer'lara gittiyse onları etkilemez. `findForDeveloper` sorgusu bu
+developer için dismissal bulunan kayıtları hariç tutar (`dismissals: { none: { userId } }`).
 
 ### Receiver Rol Kapsamı — Kendi OTP'sini Canlı Görür
 Receiver uygulaması kendi cihazının ürettiği kodları bir geçmiş listesinde gösterir ve bu liste
@@ -327,11 +332,11 @@ src/
 │   │   ├── otp.parser.ts         → (FAZ 3'te yazıldı, sonradan KULLANIM DIŞI BIRAKILDI —
 │   │   │                            parse artık cihazda yapılıyor)
 │   │   ├── otp.encryptor.ts      → AES-256-GCM encrypt/decrypt — SYNC
-│   │   ├── otp.repository.ts     → Prisma CRUD — ASYNC (save/history receiver+device include eder)
-│   │   ├── otp.service.ts        → processAndDeliver (encrypt→kaydet→routing→emit), getHistory
-│   │   ├── otp.controller.ts     → HTTP katmanı
-│   │   ├── otp.routes.ts         → Route tanımları
-│   │   └── otp.schemas.ts        → Zod şemaları (code + source + senderRaw)
+│   │   ├── otp.repository.ts     → Prisma CRUD — ASYNC (findForDeveloper/findAllForProject/findByReceiver, dismissForDeveloper)
+│   │   ├── otp.service.ts        → processAndDeliver, getHistory (developer), getAllForProject (admin), dismissForDeveloper
+│   │   ├── otp.controller.ts     → HTTP katmanı (history rol'e göre dallanır: DEVELOPER/RECEIVER/ADMIN)
+│   │   ├── otp.routes.ts         → Route tanımları (+ POST /dismiss)
+│   │   └── otp.schemas.ts        → Zod şemaları (code + source + senderRaw; dismissOtpsSchema)
 │   ├── project/
 │   │   ├── project.interfaces.ts → IProjectService, IProjectRepository, DTO'lar
 │   │   ├── project.repository.ts → Prisma CRUD — ASYNC
@@ -355,10 +360,10 @@ src/
 │       ├── routing.controller.ts → HTTP katmanı
 │       ├── routing.routes.ts     → Route tanımları
 │       └── routing.schemas.ts    → Zod şemaları
-├── jobs/
-│   └── cleanup.job.ts        → node-cron, her gün UTC 02:00, hata uygulamayı durdurmamalı
 └── routes/
     └── index.ts              → Tüm modül route'larını birleştir
+
+(jobs/ kaldırıldı — OTP süresiz olduğundan cleanup cron yok.)
 ```
 
 ---
@@ -379,6 +384,7 @@ model User {
   groupMembers  GroupMember[]
   routingRules  RoutingRule[]  @relation("ReceiverRules")
   receivedOtps  OTPLog[]       @relation("ReceiverOtps")  // sahiplik kanıtı — deviceId'den bağımsız
+  dismissals    OtpDismissal[] @relation("DeveloperDismissals")  // developer'ın feed'inden kaldırdığı OTP'ler
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   @@index([email])
@@ -477,25 +483,39 @@ model RoutingRule {
 // Bu DB seviyesi koruma, routing.service.ts'teki createRule'da yapılan açık "zaten var mı"
 // kontrolünün YERİNE değil, ONUN YANINDA çalışır — çift katmanlı korunur.
 
+// OTP kodları SÜRESİZDİR — expiresAt yoktur, otomatik silme (cron) yoktur.
 model OTPLog {
-  id            String   @id @default(uuid()) @db.Uuid
-  encryptedCode String   @db.VarChar(512)  // iv:authTag:ciphertext (base64)
+  id            String         @id @default(uuid()) @db.Uuid
+  encryptedCode String         @db.VarChar(512)  // iv:authTag:ciphertext (base64)
   source        Source
-  projectId     String   @db.Uuid
-  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  deviceId      String?  @db.Uuid          // izleme/analiz amaçlı — onDelete: SetNull
-  device        Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
-  receiverId    String   @db.Uuid          // SAHİPLİK KAYNAĞI — deviceId silinse bile kalıcı
-  receiver      User     @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
-  senderRaw     String?  @db.VarChar(255)  // ham gönderici kimliği — developer'a "kimden geldi" etiketi. SMS gövdesi DEĞİL.
-  sharingActive Boolean  @default(true)    // receiver bu OTP'nin paylaşımını durdurabilir
-  createdAt     DateTime @default(now())
-  expiresAt     DateTime
+  projectId     String         @db.Uuid
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deviceId      String?        @db.Uuid          // izleme/analiz amaçlı — onDelete: SetNull
+  device        Device?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  receiverId    String         @db.Uuid          // SAHİPLİK KAYNAĞI — deviceId silinse bile kalıcı
+  receiver      User           @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
+  senderRaw     String?        @db.VarChar(255)  // ham gönderici kimliği — developer'a "kimden geldi" etiketi. SMS gövdesi DEĞİL.
+  sharingActive Boolean        @default(true)    // receiver bu OTP'nin paylaşımını durdurabilir
+  dismissals    OtpDismissal[]                   // developer'ların kendi feed'inden kaldırdığı işaretler
+  createdAt     DateTime       @default(now())
   @@index([projectId])
-  @@index([expiresAt])
   @@index([deviceId])
   @@index([receiverId])
   @@map("otp_logs")
+}
+
+// Developer bir OTP'yi KENDİ feed'inden kaldırınca oluşur (per-developer yumuşak gizleme).
+// Kalıcı silme DEĞİL: OTP tabloda kalır — receiver/admin görmeye devam eder.
+model OtpDismissal {
+  id        String   @id @default(uuid()) @db.Uuid
+  otpId     String   @db.Uuid
+  otp       OTPLog   @relation(fields: [otpId], references: [id], onDelete: Cascade)
+  userId    String   @db.Uuid          // kaldıran DEVELOPER
+  user      User     @relation("DeveloperDismissals", fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([otpId, userId])
+  @@index([userId])
+  @@map("otp_dismissals")
 }
 
 enum Role          { RECEIVER DEVELOPER ADMIN }
@@ -535,10 +555,16 @@ GET    /api/devices           → 200 Device[] (secretHash hariç, deviceName/ph
 
 POST /api/otp                 → 200 { message, deliveredTo }   [Device Secret — X-Device-Secret header]
                                 Body: { code, source, senderRaw }  (serviceHint YOK)
-GET  /api/otp/history         → 200 paginated (rol-duyarlı: DEVELOPER routing-süzülü feed, RECEIVER kendi geçmişi)
-                                item: { id, code, source, senderRaw, createdAt, expiresAt,
+GET  /api/otp/history         → 200 paginated (rol-duyarlı):
+                                  DEVELOPER → kendisine yönlendirilen, dismiss'lemediği feed
+                                  RECEIVER  → kendi geçmişi (sharingActive dahil)
+                                  ADMIN     → projedeki TÜM receiver'lardan gelen tüm OTP'ler (özet)
+                                item: { id, code, source, senderRaw, createdAt,          (OTP süresiz — expiresAt YOK)
                                         receiver:{ name, email, phoneNumber }, device:{ name }|null,
-                                        (RECEIVER'da ayrıca sharingActive) }  [JWT — DEVELOPER|RECEIVER]
+                                        (RECEIVER'da ayrıca sharingActive) }  [JWT — DEVELOPER|RECEIVER|ADMIN]
+POST /api/otp/dismiss         → 200 { dismissed: number }      [JWT — DEVELOPER]
+                                Body: { otpIds: string[] }  — seçilen OTP'leri KENDİ feed'inden kaldırır
+                                (per-developer yumuşak gizleme; receiver/admin görmeye devam eder, kalıcı silme değil)
 PATCH /api/otp/:id/sharing    → 200 { sharingActive }          [JWT — RECEIVER, OTP'nin sahibi]
 GET  /api/otp/:id/sharing     → 200 { targets: [...] }         [JWT — RECEIVER, salt-okunur, kimlerle paylaşılıyor]
 
@@ -599,7 +625,7 @@ JWT_REFRESH_SECRET=         # min 32 karakter, ACCESS'ten FARKLI
 JWT_ACCESS_EXPIRES=15m
 JWT_REFRESH_EXPIRES=30d
 OTP_ENCRYPTION_KEY=         # 64 hex karakter (32 byte)
-# OTP geçerlilik süresi artık env DEĞİL — sabit 90 sn (CONSTANTS.OTP.TTL_SECONDS). OTP_TTL_DAYS kaldırıldı.
+# OTP geçerlilik süresi YOKTUR (kodlar süresiz, otomatik silme yok). OTP_TTL_DAYS / TTL sabiti kaldırıldı.
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
 DEVICE_SECRET_BYTES=32      # 256-bit

@@ -1,5 +1,4 @@
 import type { Device, User } from '@prisma/client';
-import { CONSTANTS } from '@config/constants';
 import { AppError } from '@errors/AppError';
 import { AuthorizationError, NotFoundError } from '@errors/errors';
 import { ErrorCode } from '@errors/ErrorCode';
@@ -8,6 +7,8 @@ import { type Result, ok, fail } from '@app-types/Result';
 import type { PaginatedResult } from '@app-types/index';
 import type { IRoutingResolver } from '@modules/routing/routing.interfaces';
 import type {
+  DismissOtpsResult,
+  GetAllOtpDTO,
   GetHistoryDTO,
   GetReceiverHistoryDTO,
   IOtpEncryptor,
@@ -16,6 +17,7 @@ import type {
   IOtpService,
   OtpDeviceInfo,
   OtpHistoryItem,
+  OtpLogWithRelations,
   OtpNotification,
   OtpReceiverInfo,
   ProcessOtpDTO,
@@ -49,11 +51,8 @@ export class OtpService implements IOtpService {
       const encryptedCode = this.encryptor.encrypt(dto.code);
 
       // 2) Kalıcılaştır (AWAIT). receiverId sahiplik kaynağıdır (deviceId'den bağımsız).
-      //    Geçerlilik 90 sn — mobil bu değere göre geri sayar (CLAUDE/PHASES madde 3).
-      //    Kayıt receiver + device ilişkileriyle döner (emit payload'ı için).
-      const expiresAt = new Date(
-        Date.now() + CONSTANTS.OTP.TTL_SECONDS * CONSTANTS.TIME.SECOND_MS,
-      );
+      //    OTP SÜRESİZDİR — expiresAt yok, otomatik silme yok. Kayıt receiver + device
+      //    ilişkileriyle döner (emit payload'ı için).
       const saved = await this.repository.save({
         encryptedCode,
         source: dto.source,
@@ -61,7 +60,6 @@ export class OtpService implements IOtpService {
         deviceId: dto.deviceId,
         receiverId: dto.receiverId,
         senderRaw: dto.senderRaw,
-        expiresAt,
       });
 
       // 3) Routing: hedef developer'ları çöz (AWAIT). Kural yoksa boş liste → kimseye gitmez.
@@ -70,13 +68,12 @@ export class OtpService implements IOtpService {
       );
 
       // 4) Yalnızca kayıt başarılıysa anlık yayınla (SYNC). Payload bir kez kurulur:
-      //    senderRaw etiketi + expiresAt (geri sayım) + receiver/device kimliği taşır.
+      //    düz kod + senderRaw etiketi + createdAt (ne zaman geldi) + receiver/device kimliği.
       const payload: OtpNotification = {
         id: saved.id,
         code: dto.code,
         source: saved.source,
         createdAt: saved.createdAt,
-        expiresAt: saved.expiresAt,
         sharingActive: saved.sharingActive,
         senderRaw: dto.senderRaw,
         receiver: this.toReceiverInfo(saved.receiver),
@@ -120,23 +117,54 @@ export class OtpService implements IOtpService {
 
       const page = await this.repository.findForDeveloper(
         dto.projectId,
+        dto.developerId,
         receiverIds,
         { page: dto.page, limit: dto.limit },
       );
 
-      // Şifre çözme SYNC — map içinde her kayıt için uygulanır.
-      const items: OtpHistoryItem[] = page.items.map((log) => ({
-        id: log.id,
-        code: this.encryptor.decrypt(log.encryptedCode),
-        source: log.source,
-        createdAt: log.createdAt,
-        expiresAt: log.expiresAt,
-        senderRaw: log.senderRaw,
-        receiver: this.toReceiverInfo(log.receiver),
-        device: this.toDeviceInfo(log.device),
-      }));
+      return ok({
+        items: page.items.map((log) => this.toHistoryItem(log)),
+        pagination: page.pagination,
+      });
+    } catch (error) {
+      return this.toResult(error);
+    }
+  }
 
-      return ok({ items, pagination: page.pagination });
+  async getAllForProject(
+    dto: GetAllOtpDTO,
+  ): Promise<Result<PaginatedResult<OtpHistoryItem>>> {
+    try {
+      // Admin özeti: projedeki tüm receiver'lardan gelen tüm OTP'ler (filtresiz, en yeni önce).
+      const page = await this.repository.findAllForProject(dto.projectId, {
+        page: dto.page,
+        limit: dto.limit,
+      });
+      return ok({
+        items: page.items.map((log) => this.toHistoryItem(log)),
+        pagination: page.pagination,
+      });
+    } catch (error) {
+      return this.toResult(error);
+    }
+  }
+
+  async dismissForDeveloper(
+    developerId: string,
+    projectId: string,
+    otpIds: string[],
+  ): Promise<Result<DismissOtpsResult>> {
+    try {
+      const dismissed = await this.repository.dismissForDeveloper(
+        projectId,
+        developerId,
+        otpIds,
+      );
+      this.logger.info(
+        { developerId, requested: otpIds.length, dismissed },
+        'developer OTP\'leri kendi feed\'inden kaldırdı',
+      );
+      return ok({ dismissed });
     } catch (error) {
       return this.toResult(error);
     }
@@ -158,7 +186,6 @@ export class OtpService implements IOtpService {
         code: this.encryptor.decrypt(log.encryptedCode),
         source: log.source,
         createdAt: log.createdAt,
-        expiresAt: log.expiresAt,
         sharingActive: log.sharingActive,
         senderRaw: log.senderRaw,
         receiver: this.toReceiverInfo(log.receiver),
@@ -231,6 +258,19 @@ export class OtpService implements IOtpService {
     } catch (error) {
       return this.toResult(error);
     }
+  }
+
+  /** OTPLog satırını client görünümüne çevirir (kod çözülür; developer + admin ortak kullanır). */
+  private toHistoryItem(log: OtpLogWithRelations): OtpHistoryItem {
+    return {
+      id: log.id,
+      code: this.encryptor.decrypt(log.encryptedCode),
+      source: log.source,
+      createdAt: log.createdAt,
+      senderRaw: log.senderRaw,
+      receiver: this.toReceiverInfo(log.receiver),
+      device: this.toDeviceInfo(log.device),
+    };
   }
 
   /** OTP'yi üreten receiver'ın kimlik görünümü (developer'a "kimden geldi"). */

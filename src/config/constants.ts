@@ -6,12 +6,6 @@ export const CONSTANTS = {
   OTP: {
     /** OTP kodu uzunluğu (haneli). */
     CODE_LENGTH: 6,
-    /**
-     * OTP geçerlilik süresi (saniye). `expiresAt = createdAt + 90s`.
-     * Mobil bu değere göre geri sayar; süre dolunca kod history feed'inden düşer
-     * (developer `findByProject` filtresi `expiresAt > now`).
-     */
-    TTL_SECONDS: 90,
     /** SMS metninden OTP yakalayan regex (tam 6 haneli sayı grubu). */
     CODE_REGEX: /\b\d{6}\b/g,
     /** AES IV uzunluğu (byte). */
@@ -69,11 +63,5 @@ export const CONSTANTS = {
     NAME_MAX_LENGTH: 100,
     /** Telefon numarası üst sınırı — DB şemasındaki VarChar(32) ile hizalı. */
     PHONE_MAX_LENGTH: 32,
-  },
-  TIME: {
-    /** Bir saniyenin milisaniye karşılığı (OTP TTL hesabı). */
-    SECOND_MS: 1000,
-    /** Bir günün milisaniye karşılığı (test fixture'larında geniş expiry için). */
-    DAY_MS: 24 * 60 * 60 * 1000,
   },
 } as const;

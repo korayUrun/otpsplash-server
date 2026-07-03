@@ -26,77 +26,45 @@ export class PrismaOtpRepository implements IOtpRepository {
 
   /**
    * Bir developer'a aktif kuralla yönlendirilen kayıtları sayfalı döner (en yeni önce).
-   * Görünürlük filtreleri: `sharingActive` açık + süresi dolmamış; ek olarak yalnızca
-   * verilen receiver'lara ait kayıtlar (`receiverId IN receiverIds`). Böylece geçmiş,
-   * canlı emit'in `resolveTargets` çözümüyle hizalanır (receiver bazlı erişim).
+   * Görünürlük filtreleri: `sharingActive` açık + bu developer'ın KENDİ feed'inden kaldırMADIĞı
+   * (dismissal yok) + yalnızca verilen receiver'lara ait kayıtlar. OTP süresiz — expiry filtresi yok.
    */
   async findForDeveloper(
     projectId: string,
+    developerId: string,
     receiverIds: string[],
     options: PaginationOptions,
   ): Promise<PaginatedResult<OtpLogWithRelations>> {
     const where: Prisma.OTPLogWhereInput = {
       projectId,
       sharingActive: true,
-      expiresAt: { gt: new Date() },
       receiverId: { in: receiverIds },
+      dismissals: { none: { userId: developerId } },
     };
-    const skip = (options.page - 1) * options.limit;
+    return this.paginate(where, options);
+  }
 
-    const [items, total] = await Promise.all([
-      this.prisma.oTPLog.findMany({
-        where,
-        include: WITH_RELATIONS,
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: options.limit,
-      }),
-      this.prisma.oTPLog.count({ where }),
-    ]);
-
-    return {
-      items,
-      pagination: {
-        page: options.page,
-        limit: options.limit,
-        total,
-        totalPages: Math.ceil(total / options.limit),
-      },
-    };
+  /**
+   * Projedeki TÜM OTP'leri sayfalı döner (en yeni önce) — admin özet ekranı.
+   * Filtre YOKTUR: her receiver'dan, sharing/dismissal durumundan bağımsız hepsi gelir.
+   */
+  async findAllForProject(
+    projectId: string,
+    options: PaginationOptions,
+  ): Promise<PaginatedResult<OtpLogWithRelations>> {
+    return this.paginate({ projectId }, options);
   }
 
   /**
    * Bir receiver'ın KENDİ kayıtlarını sayfalı döner (en yeni önce).
-   * findForDeveloper'ın AKSİNE filtre YOKTUR: süresi dolmuş + sharingActive=false kayıtlar da
-   * GELİR — receiver kendi kodlarını görüp paylaşımı yönetebilmeli.
+   * findForDeveloper'ın AKSİNE filtre YOKTUR: sharingActive=false kayıtlar da GELİR
+   * — receiver kendi kodlarını görüp paylaşımı yönetebilmeli.
    */
   async findByReceiver(
     receiverId: string,
     options: PaginationOptions,
   ): Promise<PaginatedResult<OtpLogWithRelations>> {
-    const where = { receiverId };
-    const skip = (options.page - 1) * options.limit;
-
-    const [items, total] = await Promise.all([
-      this.prisma.oTPLog.findMany({
-        where,
-        include: WITH_RELATIONS,
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: options.limit,
-      }),
-      this.prisma.oTPLog.count({ where }),
-    ]);
-
-    return {
-      items,
-      pagination: {
-        page: options.page,
-        limit: options.limit,
-        total,
-        totalPages: Math.ceil(total / options.limit),
-      },
-    };
+    return this.paginate({ receiverId }, options);
   }
 
   async updateSharingActive(otpId: string, isActive: boolean): Promise<OTPLog> {
@@ -106,10 +74,53 @@ export class PrismaOtpRepository implements IOtpRepository {
     });
   }
 
-  async deleteExpired(): Promise<number> {
-    const result = await this.prisma.oTPLog.deleteMany({
-      where: { expiresAt: { lt: new Date() } },
+  async dismissForDeveloper(
+    projectId: string,
+    developerId: string,
+    otpIds: string[],
+  ): Promise<number> {
+    // Yalnızca projede gerçekten var olan id'ler için dismissal yazılır (geçersiz id sessizce atlanır).
+    const existing = await this.prisma.oTPLog.findMany({
+      where: { id: { in: otpIds }, projectId },
+      select: { id: true },
+    });
+    if (existing.length === 0) {
+      return 0;
+    }
+    // skipDuplicates: zaten kaldırılmış OTP tekrar kaldırılmaya çalışılırsa no-op (unique index).
+    const result = await this.prisma.otpDismissal.createMany({
+      data: existing.map((otp) => ({ otpId: otp.id, userId: developerId })),
+      skipDuplicates: true,
     });
     return result.count;
+  }
+
+  /** Ortak sayfalama sorgusu (createdAt desc, receiver+device include). */
+  private async paginate(
+    where: Prisma.OTPLogWhereInput,
+    options: PaginationOptions,
+  ): Promise<PaginatedResult<OtpLogWithRelations>> {
+    const skip = (options.page - 1) * options.limit;
+
+    const [items, total] = await Promise.all([
+      this.prisma.oTPLog.findMany({
+        where,
+        include: WITH_RELATIONS,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: options.limit,
+      }),
+      this.prisma.oTPLog.count({ where }),
+    ]);
+
+    return {
+      items,
+      pagination: {
+        page: options.page,
+        limit: options.limit,
+        total,
+        totalPages: Math.ceil(total / options.limit),
+      },
+    };
   }
 }

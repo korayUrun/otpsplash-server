@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import { AuthenticationError, DeviceAuthError } from '@errors/errors';
 import type { IOtpService } from './otp.interfaces';
 import type {
+  DismissOtpsBody,
   HistoryQuery,
   ProcessOtpBody,
   SharingParams,
@@ -50,7 +51,8 @@ export class OtpController {
 
     const query = req.query as unknown as HistoryQuery;
 
-    // Rol-duyarlı: RECEIVER kendi kayıtlarını (receiverId ile), DEVELOPER proje feed'ini alır.
+    // Rol-duyarlı: RECEIVER kendi kayıtları, ADMIN projedeki TÜM OTP'ler (özet),
+    // DEVELOPER kendisine yönlendirilen (dismiss'lemediği) feed.
     const result =
       req.user.role === Role.RECEIVER
         ? await this.otpService.getReceiverHistory({
@@ -59,12 +61,18 @@ export class OtpController {
             page: query.page,
             limit: query.limit,
           })
-        : await this.otpService.getHistory({
-            developerId: req.user.sub,
-            projectId: req.user.projectId,
-            page: query.page,
-            limit: query.limit,
-          });
+        : req.user.role === Role.ADMIN
+          ? await this.otpService.getAllForProject({
+              projectId: req.user.projectId,
+              page: query.page,
+              limit: query.limit,
+            })
+          : await this.otpService.getHistory({
+              developerId: req.user.sub,
+              projectId: req.user.projectId,
+              page: query.page,
+              limit: query.limit,
+            });
 
     if (!result.success) {
       next(result.error);
@@ -108,6 +116,27 @@ export class OtpController {
 
     const { id } = req.params as unknown as SharingParams;
     const result = await this.otpService.getSharingTargets(id, req.user.sub);
+
+    if (!result.success) {
+      next(result.error);
+      return;
+    }
+    res.status(200).json({ success: true, data: result.data, requestId: req.id });
+  };
+
+  // DEVELOPER seçtiği OTP'leri KENDİ feed'inden kaldırır (yumuşak gizleme, kalıcı silme değil).
+  dismiss = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!req.user) {
+      next(new AuthenticationError('Kimlik doğrulama gerekli'));
+      return;
+    }
+
+    const body = req.body as DismissOtpsBody;
+    const result = await this.otpService.dismissForDeveloper(
+      req.user.sub,
+      req.user.projectId,
+      body.otpIds,
+    );
 
     if (!result.success) {
       next(result.error);

@@ -12,7 +12,8 @@ const isIntegration = testPath.includes(`${sep}integration${sep}`);
 if (isIntegration) {
   beforeEach(async () => {
     // FK sırası (çocuk → ebeveyn):
-    // OTPLog → Device → RoutingRule → GroupMember → Group → User → Project.
+    // OtpDismissal → OTPLog → Device → RoutingRule → GroupMember → Group → User → Project.
+    await prisma.otpDismissal.deleteMany();
     await prisma.oTPLog.deleteMany();
     await prisma.device.deleteMany();
     await prisma.routingRule.deleteMany();

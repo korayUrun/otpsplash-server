@@ -12,7 +12,6 @@ import {
   type User,
 } from '@prisma/client';
 import { prisma } from '@config/prisma';
-import { CONSTANTS } from '@config/constants';
 import { Argon2PasswordService } from '@modules/auth/password.service';
 import { SecretService } from '@modules/device/secret.service';
 import { AesGcmOtpEncryptor } from '@modules/otp/otp.encryptor';
@@ -109,25 +108,19 @@ interface CreateOtpLogOptions {
   /** Developer'a gösterilecek ham gönderici etiketi. */
   senderRaw?: string;
   sharingActive?: boolean;
-  /** Süresi geçmiş kayıt testi için override edilir. */
-  expiresAt?: Date;
 }
 
 /**
  * Test OTP kaydı oluşturur (kod gerçek AES-256-GCM ile şifrelenir).
  * `receiverId` verilmezse sahiplik için projede hafif bir RECEIVER üretilir
  * (argon2 maliyetinden kaçınmak için parola placeholder'dır — login amaçlı değildir).
+ * OTP süresizdir — expiresAt yoktur.
  * @returns Oluşturulan OTPLog ve şifrelenen düz kod.
  */
 export async function createTestOtpLog(
   opts: CreateOtpLogOptions,
 ): Promise<{ otpLog: OTPLog; code: string }> {
   const code = opts.code ?? '123456';
-  // Fixture varsayılanı üretim TTL'inden (90 sn) bağımsız, testler için geniş (1 gün);
-  // süresi dolmuş kayıt senaryoları expiresAt override'ı ile kurulur.
-  const expiresAt =
-    opts.expiresAt ?? new Date(Date.now() + CONSTANTS.TIME.DAY_MS);
-
   const receiverId = opts.receiverId ?? (await createPlaceholderReceiver(opts.projectId));
 
   const otpLog = await prisma.oTPLog.create({
@@ -139,7 +132,6 @@ export async function createTestOtpLog(
       receiverId,
       senderRaw: opts.senderRaw,
       sharingActive: opts.sharingActive ?? true,
-      expiresAt,
     },
   });
   return { otpLog, code };

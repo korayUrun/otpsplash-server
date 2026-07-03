@@ -13,7 +13,11 @@ import {
   createTestRoutingRule,
   createTestUser,
 } from '../helpers/fixtures';
-import { getDeviceSecret, getReceiverToken } from '../helpers/auth.helper';
+import {
+  getAdminToken,
+  getDeviceSecret,
+  getReceiverToken,
+} from '../helpers/auth.helper';
 
 const { app, io } = createApp();
 const encryptor = new AesGcmOtpEncryptor();
@@ -434,18 +438,17 @@ describe('GET /api/otp/history — DEVELOPER routing-süzülü feed', () => {
     expect(res.status).toBe(401);
   });
 
-  it('süresi dolmuş OTP geçmişte görünmez', async () => {
+  it('OTP süresiz — createdAt eski olsa bile feed\'de kalır (otomatik düşmez)', async () => {
     const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
-    await createTestOtpLog({
+    // createdAt'i günler öncesine çek — eskiden expiry ile düşerdi, artık kalmalı.
+    const { otpLog } = await createTestOtpLog({
       projectId,
       receiverId: receiver.id,
       code: '111111',
     });
-    await createTestOtpLog({
-      projectId,
-      receiverId: receiver.id,
-      code: '999999',
-      expiresAt: new Date(Date.now() - 1000), // süresi geçmiş
+    await prisma.oTPLog.update({
+      where: { id: otpLog.id },
+      data: { createdAt: new Date('2020-01-01T00:00:00.000Z') },
     });
 
     const res = await request(app)
@@ -528,14 +531,13 @@ describe('GET /api/otp/history — RECEIVER rol-duyarlı (kendi geçmişi)', () 
     expect(res.body.data[0].code).toBe('111111');
   });
 
-  it('süresi dolmuş VE sharingActive:false kayıtlar da görünür', async () => {
+  it('sharingActive:false kayıtlar da kendi geçmişinde görünür', async () => {
     const ctx = await getReceiverToken();
     await createTestOtpLog({
       projectId: ctx.project.id,
       receiverId: ctx.user.id,
       code: '333333',
       sharingActive: false,
-      expiresAt: new Date(Date.now() - 1000), // süresi geçmiş
     });
 
     const res = await request(app)
@@ -714,5 +716,142 @@ describe('GET /api/otp/:id/sharing', () => {
       .set('Authorization', `Bearer ${intruder.accessToken}`);
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe('POST /api/otp/dismiss — developer kendi feed\'inden kaldırır', () => {
+  it('kaldırılan OTP developer feed\'inden düşer ama receiver\'da kalır (kalıcı silme değil)', async () => {
+    const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
+    const { otpLog: keep } = await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+      code: '111111',
+    });
+    const { otpLog: drop } = await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+      code: '222222',
+    });
+
+    const dismissRes = await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${developer.token}`)
+      .send({ otpIds: [drop.id] });
+
+    expect(dismissRes.status).toBe(200);
+    expect(dismissRes.body.data.dismissed).toBe(1);
+
+    // Developer feed'inde artık yalnızca kaldırılmayan kod var.
+    const devFeed = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${developer.token}`);
+    const devCodes = (devFeed.body.data as Array<{ code: string }>).map((d) => d.code);
+    expect(devCodes).toEqual(['111111']);
+
+    // Receiver kendi geçmişinde HER İKİSİNİ de görmeye devam eder (dismissal per-developer).
+    const rcvFeed = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${receiver.token}`);
+    const rcvCodes = (rcvFeed.body.data as Array<{ code: string }>).map((d) => d.code);
+    expect(rcvCodes.sort()).toEqual(['111111', '222222']);
+    // OTP tabloda duruyor (kalıcı silinmedi).
+    expect(await prisma.oTPLog.findUnique({ where: { id: keep.id } })).not.toBeNull();
+    expect(await prisma.oTPLog.findUnique({ where: { id: drop.id } })).not.toBeNull();
+  });
+
+  it('aynı OTP tekrar kaldırılırsa idempotent (dismissed:0)', async () => {
+    const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
+    const { otpLog } = await createTestOtpLog({ projectId, receiverId: receiver.id });
+
+    await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${developer.token}`)
+      .send({ otpIds: [otpLog.id] });
+
+    const again = await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${developer.token}`)
+      .send({ otpIds: [otpLog.id] });
+
+    expect(again.status).toBe(200);
+    expect(again.body.data.dismissed).toBe(0);
+  });
+
+  it('403 — RECEIVER dismiss edemez (yalnızca DEVELOPER)', async () => {
+    const ctx = await getReceiverToken();
+    const { otpLog } = await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+    });
+
+    const res = await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${ctx.accessToken}`)
+      .send({ otpIds: [otpLog.id] });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('400 — boş otpIds (VALIDATION_ERROR)', async () => {
+    const { developer } = await projectWithRoutedDeveloper();
+    const res = await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${developer.token}`)
+      .send({ otpIds: [] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('GET /api/otp/history — ADMIN özeti (tüm receiver\'lar)', () => {
+  it('projedeki tüm receiver\'lardan gelen tüm OTP\'ler sıralanır', async () => {
+    const admin = await getAdminToken();
+    const { user: r1 } = await createTestUser({
+      projectId: admin.project.id,
+      role: Role.RECEIVER,
+    });
+    const { user: r2 } = await createTestUser({
+      projectId: admin.project.id,
+      role: Role.RECEIVER,
+    });
+    await createTestOtpLog({ projectId: admin.project.id, receiverId: r1.id, code: '111111' });
+    await createTestOtpLog({ projectId: admin.project.id, receiverId: r2.id, code: '222222' });
+    // Paylaşımı kapalı olan bile admin özetinde görünür (filtre yok).
+    await createTestOtpLog({
+      projectId: admin.project.id,
+      receiverId: r1.id,
+      code: '333333',
+      sharingActive: false,
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${admin.accessToken}`);
+
+    expect(res.status).toBe(200);
+    const codes = (res.body.data as Array<{ code: string }>).map((d) => d.code);
+    expect(codes.sort()).toEqual(['111111', '222222', '333333']);
+    expect(res.body.pagination.total).toBe(3);
+  });
+
+  it('proje izolasyonu — admin başka projenin OTP\'lerini görmez', async () => {
+    const admin = await getAdminToken();
+    const { user: mine } = await createTestUser({
+      projectId: admin.project.id,
+      role: Role.RECEIVER,
+    });
+    await createTestOtpLog({ projectId: admin.project.id, receiverId: mine.id, code: '111111' });
+    // Başka projede bir OTP.
+    const other = await getReceiverToken();
+    await createTestOtpLog({ projectId: other.project.id, receiverId: other.user.id, code: '999999' });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${admin.accessToken}`);
+
+    expect(res.status).toBe(200);
+    const codes = (res.body.data as Array<{ code: string }>).map((d) => d.code);
+    expect(codes).toEqual(['111111']);
   });
 });
