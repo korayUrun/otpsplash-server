@@ -1,13 +1,21 @@
+import jwt from 'jsonwebtoken';
 import { Role } from '@prisma/client';
 import {
   authenticateSocket,
   handleConnection,
+  type SocketAuthErrorData,
 } from '@infrastructure/socket';
 import { AuthenticationError } from '@errors/errors';
 import { ErrorCode } from '@errors/ErrorCode';
 import { CONSTANTS } from '@config/constants';
+import { env } from '@config/env';
 import { tokenService } from '@modules/auth/token.service';
 import type { JwtPayload } from '@app-types/index';
+
+/** next'e iletilen reddin makine-okunur data.code'unu okur (client bu kodla karar verir). */
+function rejectionCode(error: unknown): ErrorCode | undefined {
+  return (error as { data?: SocketAuthErrorData } | undefined)?.data?.code;
+}
 
 type AuthSocket = Parameters<typeof authenticateSocket>[0];
 type ConnSocket = Parameters<typeof handleConnection>[0];
@@ -55,7 +63,7 @@ describe('authenticateSocket', () => {
     expect(socket.data.user.email).toBe(samplePayload.email);
   });
 
-  it('token yok → AuthenticationError ile reddedilir', () => {
+  it('token yok → reddedilir, data.code AUTHENTICATION_FAILED (client login\'e atar)', () => {
     const socket = fakeAuthSocket({});
     const next = jest.fn();
 
@@ -63,9 +71,10 @@ describe('authenticateSocket', () => {
 
     const error = next.mock.calls[0]?.[0];
     expect(error).toBeInstanceOf(AuthenticationError);
+    expect(rejectionCode(error)).toBe(ErrorCode.AUTHENTICATION_FAILED);
   });
 
-  it('geçersiz token → AuthenticationError (TOKEN_INVALID)', () => {
+  it('geçersiz token → data.code TOKEN_INVALID (client login\'e atar)', () => {
     const socket = fakeAuthSocket({ auth: { token: 'garbage.token.value' } });
     const next = jest.fn();
 
@@ -74,6 +83,27 @@ describe('authenticateSocket', () => {
     const error = next.mock.calls[0]?.[0];
     expect(error).toBeInstanceOf(AuthenticationError);
     expect((error as AuthenticationError).errorCode).toBe(ErrorCode.TOKEN_INVALID);
+    // Makine-okunur kanal (client bunu okur, mesaj metnini değil).
+    expect(rejectionCode(error)).toBe(ErrorCode.TOKEN_INVALID);
+  });
+
+  it('süresi dolmuş token → data.code TOKEN_EXPIRED (client sessizce refresh eder)', () => {
+    const expired = jwt.sign(
+      {
+        email: samplePayload.email,
+        role: samplePayload.role,
+        projectId: samplePayload.projectId,
+      },
+      env.JWT_ACCESS_SECRET,
+      { subject: samplePayload.sub, expiresIn: '-10s' },
+    );
+    const socket = fakeAuthSocket({ auth: { token: expired } });
+    const next = jest.fn();
+
+    authenticateSocket(socket, next);
+
+    const error = next.mock.calls[0]?.[0];
+    expect(rejectionCode(error)).toBe(ErrorCode.TOKEN_EXPIRED);
   });
 });
 

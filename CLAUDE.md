@@ -128,6 +128,20 @@ YASAK:
 Şu an in-memory — 5-10 kullanıcı için yeterli. Yatay büyüme gerekirse:
 `io.adapter(createAdapter(pubClient, subClient))` — 1 satır, geri kalan kod değişmez.
 
+### Socket Handshake Auth — Makine-Okunur Red Kodu
+Handshake auth reddi (`authenticateSocket`) client'a hata METNİNİN yanı sıra makine-okunur bir
+`data.code` (`ErrorCode`) taşır — Socket.IO `next(err)`'deki `err.data`'yı `connect_error`
+event'ine iletir. Client "sessiz refresh mi / login'e mi" kararını kırılgan string eşleştirmesi
+(`/expired|token|jwt/i`) yerine bu koda göre verir:
+```
+TOKEN_EXPIRED              → client access token'ı sessizce yeniler (refresh)
+TOKEN_INVALID / diğerleri  → client doğrudan login'e yönlendirir
+```
+Red edilen hata sunucu tarafında yine `AuthenticationError` örneğidir (errorCode korunur,
+`token.service` TOKEN_EXPIRED/TOKEN_INVALID ayrımını yapar); üstüne yalnızca client'ın okuduğu
+`data: { code }` eklenir (bkz. `SocketAuthErrorData`). Access token'lar stateless olduğundan
+backend `TOKEN_REVOKED` ÜRETMEZ — iptal sayılacak her durum TOKEN_INVALID altında toplanır.
+
 ### Device Auth Mimari Kararı (FAZ 6)
 JWT bir **kullanıcı oturumunu** temsil eder ve kısa ömürlüdür (15dk). Android BroadcastReceiver
 ve iOS Shortcut ise **kullanıcı oturumu olmayan, arka planda aylarca sessizce çalışan otomasyonlardır.**

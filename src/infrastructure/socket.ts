@@ -8,6 +8,7 @@ import {
 import { Role } from '@prisma/client';
 import { CONSTANTS } from '@config/constants';
 import { AuthenticationError } from '@errors/errors';
+import { ErrorCode } from '@errors/ErrorCode';
 import { tokenService } from '@modules/auth/token.service';
 import { logger } from '@infrastructure/logger';
 import type { JwtPayload } from '@app-types/index';
@@ -69,9 +70,44 @@ function extractToken(socket: AppSocket): string | null {
 }
 
 /**
+ * Handshake auth reddiyle client'a iletilen makine-okunur yük. Client "sessiz refresh mi,
+ * login'e mi" kararını hata METNİNE göre değil bu KODA göre verir (kırılgan string eşleştirmesi
+ * yerine). Socket.IO, `next(err)`'deki `err.data`'yı client'ın `connect_error` handler'ına iletir.
+ *
+ * Client sözleşmesi:
+ *   - `TOKEN_EXPIRED`             → access token'ı sessizce yenile (refresh akışı)
+ *   - `TOKEN_INVALID` / diğerleri → doğrudan login'e yönlendir
+ *
+ * (Not: access token'lar stateless olduğundan backend `TOKEN_REVOKED` üretmez; iptal edilmiş
+ * kabul edilecek her durum `TOKEN_INVALID` altında toplanır — client ikisini de login'e atar.)
+ */
+export interface SocketAuthErrorData {
+  code: ErrorCode;
+}
+
+/**
+ * Handshake reddini makine-okunur `data.code` ile zenginleştirip `next`'e iletir.
+ * AuthenticationError örneği KORUNUR (errorCode zaten TOKEN_EXPIRED/TOKEN_INVALID ayrımını
+ * taşır — token.service belirler), üstüne Socket.IO'nun client'a taşıdığı `data` alanı eklenir.
+ * Beklenmeyen (AuthenticationError olmayan) durumda genel AUTHENTICATION_FAILED ile reddedilir
+ * — arbitrer hata mesajları socket üzerinden client'a sızdırılmaz.
+ */
+function rejectWithCode(
+  next: (err?: ExtendedError) => void,
+  error: unknown,
+): void {
+  const authError =
+    error instanceof AuthenticationError ? error : new AuthenticationError();
+  const extended: ExtendedError = Object.assign(authError, {
+    data: { code: authError.errorCode } satisfies SocketAuthErrorData,
+  });
+  next(extended);
+}
+
+/**
  * Socket bağlantısı için JWT doğrulama middleware'i.
- * Token yoksa/geçersizse `next(error)` ile bağlantı reddedilir.
- * Başarılıysa `socket.data.user` doldurulur.
+ * Token yoksa/geçersizse `rejectWithCode` ile bağlantı reddedilir — red yükü makine-okunur
+ * `data.code` taşır (bkz. SocketAuthErrorData). Başarılıysa `socket.data.user` doldurulur.
  *
  * @remarks export edilir ki birim testi gerçek bağlantı kurmadan doğrulayabilsin.
  */
@@ -82,14 +118,18 @@ export function authenticateSocket(
   try {
     const token = extractToken(socket);
     if (!token) {
-      next(new AuthenticationError('Socket bağlantısı için token gerekli'));
+      rejectWithCode(
+        next,
+        new AuthenticationError('Socket bağlantısı için token gerekli'),
+      );
       return;
     }
     socket.data.user = tokenService.verifyAccessToken(token);
     next();
   } catch (error) {
-    // verifyAccessToken AuthenticationError fırlatır; beklenmeyenleri de güvenle reddet.
-    next(error instanceof Error ? error : new AuthenticationError());
+    // verifyAccessToken AuthenticationError fırlatır (TOKEN_EXPIRED/TOKEN_INVALID);
+    // beklenmeyenleri de güvenle, kodlu şekilde reddet.
+    rejectWithCode(next, error);
   }
 }
 
