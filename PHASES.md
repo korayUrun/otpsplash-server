@@ -12,15 +12,19 @@
 [x] FAZ 4 — Proje Yönetimi                (commit edildi)
 [x] FAZ 5 — Test Coverage ve Deploy       (commit edildi)
 [x] FAZ 6 — Device Authentication         (commit edildi)
-[x] FAZ 7 — Gruplar ve Yönlendirme        (commit edildi — 5f00276)
-[x] FAZ 8 — Servis Tespiti ve Kayıt Defteri (commit edildi — aef3c34)
+[x] FAZ 7 — Gruplar ve Yönlendirme        (commit edildi — 5f00276; sonradan servissiz sadeleştirildi)
+[~] FAZ 8 — Servis Tespiti ve Kayıt Defteri (GERİ ALINDI — bkz. "Routing Sadeleştirme" bölümü)
+[x] Fiziksel Cihaz Testi Düzeltmeleri (madde 3/6/11) — aşağıdaki bölüme bak
+[x] Routing Sadeleştirme — servis kavramı kaldırıldı (bkz. aşağıdaki bölüm)
+[x] OTP Süresiz + Developer Dismissal + Admin Özet (bkz. aşağıdaki bölüm; madde 3'ün 90 sn TTL'i GERİ ALINDI)
 ```
 
-> **FAZ 8 — tamamlandı ve commit edildi (aef3c34):** service-registry modülü (resolver
-> cache'i + ReDoS-korumalı şema + kova upsert), `OTPLog.serviceId` çözümlemesi, `POST /api/otp`
-> body değişimi (`smsText` kaldırıldı, `code`/`senderRaw` zorunlu, `serviceHint` opsiyonel —
-> parser/validate adımı service'ten çıktı), Device profili (`deviceName`/`phoneNumber`) ve tüm
-> unit/integration testleri. `npm run typecheck` ve `npm test` (199 test) temiz geçiyor.
+> **FAZ 8 GERİ ALINDI (Routing Sadeleştirme):** service-registry modülü, `ServiceRegistry`
+> tablosu, `RoutingRule.serviceId`/`OTPLog.serviceId`, `serviceHint`, kova mantığı ve
+> `/api/service-registry*` uçları **tamamen kaldırıldı.** Dağıtım artık yalnızca receiver
+> bazlıdır (`RoutingRule: receiver → developer/grup`). Ayrıntı için bu dosyanın sonundaki
+> **"Routing Sadeleştirme"** bölümüne bak. Aşağıdaki FAZ 8 açıklaması tarihsel referans olarak
+> korunmuştur; artık geçerli DEĞİLDİR.
 
 Yeni bir oturuma başlarken Claude Code'a şunu söyle:
 ```
@@ -438,6 +442,10 @@ artık projedeki herkes değil, admin'in `(receiver, servis) → developer veya 
 
 ## FAZ 8 — Servis Tespiti ve Kayıt Defteri
 
+> ⚠️ **GERİ ALINDI — bu faz artık geçerli değildir.** Servis tespiti/kayıt defteri katmanı
+> tamamen kaldırıldı; routing receiver bazlı sadeleştirildi. Aşağıdaki içerik yalnızca tarihsel
+> referanstır. Güncel durum için dosyanın sonundaki **"Routing Sadeleştirme"** bölümüne bak.
+
 **Hedef:** Cihazdan gelen `senderRaw` ve `serviceHint` sinyalleri backend'de bir servise
 (Binance, Garanti vb.) çözümlenir. Eşleşmeyen sinyaller otomatik olarak Servis Kayıt
 Defteri'nde inaktif satır olarak birikir, admin oradan tek tıkla aktive eder.
@@ -570,14 +578,116 @@ eklemekle mümkün olmasını sağlar.
 
 ---
 
+## Fiziksel Cihaz Testi Düzeltmeleri (FAZ 8 Sonrası)
+
+**Hedef:** Fiziksel telefon (Android/iOS) testinde ortaya çıkan eksiklerin giderilmesi.
+Mimari kararlar CLAUDE.md'ye işlendi (Self-Register / OTP TTL / Receiver Rol Kapsamı blokları).
+
+**Yapılanlar:**
+
+- **madde 3 — OTP geçerlilik süresi 90 sn.** `expiresAt = createdAt + 90 sn`, artık
+  `CONSTANTS.OTP.TTL_SECONDS` sabitinden hesaplanır. `OTP_TTL_DAYS` env değişkeni tüm kod
+  tabanından ve `.env*` dosyalarından kaldırıldı. Mobil zaten `expiresAt`'e göre geri sayıyor.
+
+- **madde 6 — `DELETE /api/groups/:id`.** ADMIN kendi projesindeki grubu siler; başka
+  proje/olmayan grup → 404 GROUP_NOT_FOUND. Üyelikler ve o grubu hedefleyen routing kuralları
+  DB seviyesinde `ON DELETE CASCADE` ile temizlenir — dangling kural kalmaz (cascade testiyle
+  doğrulandı). group modülüne `delete` (interface/repo/service/controller/route) eklendi.
+
+- **madde 11 — Self-register uyarlandı.** `POST /api/auth/register` body'sinden `projectId`
+  KALDIRILDI; kullanıcı varsayılan projeye (`Project.isDefault`) bağlanır. `name` zorunlu,
+  `phoneNumber` opsiyonel eklendi (`User.phoneNumber`). Rol yalnızca RECEIVER/DEVELOPER —
+  ADMIN reddedilir (400). Varsayılan proje yoksa 404. Migration `add_register_fields`
+  (`User.phoneNumber`, `Project.isDefault` + partial unique index `projects_isDefault_key`).
+  Seed demo projeyi varsayılan işaretler.
+
+- **madde 8 — senderRaw/serviceName (zaten kodluydu, doğrulandı).** Socket payload'ı
+  (`OtpNotification`), developer history ve receiver history üçü de `serviceName` + `senderRaw`
+  taşıyor; entegrasyon testleri assert ediyor. Kod tarafında ek değişiklik gerekmedi.
+
+- **madde 2 — iOS canlı akış: EKLENMEDİ (karar).** Receiver'ın tek işlevi kayıt + SMS akışını
+  başlatmak; cihazda canlı OTP feed'i yok. Bu yüzden receiver'ın kendi odasına emit eklenmedi
+  (CLAUDE.md "Receiver Rol Kapsamı — iOS Canlı Emit Yok").
+
+**Tamamlanma Kriterleri:**
+- [x] OTP `expiresAt` = createdAt + 90 sn; `OTP_TTL_DAYS` hiçbir yerde yok
+- [x] `DELETE /api/groups/:id` → 200 (ADMIN), 403 (diğer rol), 404 (başka proje/olmayan)
+- [x] Grup silinince üyelik + hedef routing kuralları cascade ile siliniyor
+- [x] register body'sinde `projectId` yok; varsayılan projeye bağlanıyor
+- [x] register ADMIN rolünü reddediyor (400); `name` zorunlu, `phoneNumber` opsiyonel
+- [x] `npm run typecheck` temiz, `npm test` (213 test) geçiyor
+
+---
+
+## Routing Sadeleştirme (Servis Kavramı Kaldırıldı)
+
+**Hedef:** Dağıtımı servis bağımlılığından kurtarmak. `RoutingRule` artık `(receiver, servis) → hedef`
+değil, sadece `receiver → hedef` (developer veya grup). Gelen SMS'in hangi şirkete ait olduğu
+backend'de çözülmez; bir receiver'ın ürettiği tüm kodlar o receiver'a atanmış developer(lar)a gider.
+
+**Neden:** Servis tespiti (FAZ 8) QA aracı ölçeğinde gereğinden karmaşıktı — admin'in her servis
+için pattern kurması, kova yönetmesi gerekiyordu. Pratikte "bu receiver'ın kodları şu developer'lara
+gitsin" yeterli. `senderRaw` yine developer'a "kimden geldi" etiketi olarak gösterilir.
+
+**Yapılanlar:**
+- **Şema:** `ServiceRegistry` modeli/tablosu, `RoutingRule.serviceId`, `OTPLog.serviceId` düşürüldü;
+  partial unique index'ler `(receiver, developer)` / `(receiver, group)` olarak yeniden oluşturuldu.
+  Migration: `20260702130000_simplify_routing_remove_service_registry` (servisten dolayı yinelenen
+  kurallar unique index öncesi deduplike edilir).
+- **Modül:** `src/modules/service-registry/` tamamen silindi; `/api/service-registry*` uçları,
+  `serviceHint` (POST body), `SERVICE_REGISTRY_CACHE_TTL_MS`, `SERVICE_NOT_FOUND`/`SERVICE_INACTIVE`
+  error code'ları kaldırıldı.
+- **Routing:** `resolveTargets(receiverId)` (serviceId yok); developer geçmişi için
+  `resolveVisibleReceiverIds(developerId): string[]` — developer'a atanan receiver id'leri.
+- **OTP:** `processAndDeliver` servis çözümleme/kova adımı olmadan çalışır. History + socket payload
+  yeni şekil: `{ code, senderRaw, createdAt, expiresAt, receiver:{name,email,phoneNumber}, device:{name}|null }`
+  (eski `serviceName` alanı kaldırıldı). Developer history receiver-ataması bazlı süzülür.
+
+**Tamamlanma Kriterleri:**
+- [x] `RoutingRule` şeması serviceId'siz; migration dev + test DB'ye uygulandı
+- [x] `POST /api/otp` `serviceHint` kabul etmiyor; `senderRaw` DB'de kalıyor (etiket)
+- [x] Bir receiver'ın kodları o receiver'a atanan developer(lar)a gidiyor; kural yoksa kimseye gitmiyor
+- [x] Developer `GET /api/otp/history` receiver-ataması bazlı süzülüyor (canlı emit ile hizalı)
+- [x] History/socket payload `receiver{name,email,phoneNumber}` + `device{name}` taşıyor
+- [x] `/api/service-registry*` uçları ve service-registry modülü yok
+- [x] `npm run typecheck` + `npm run lint` + `npm run build` temiz, `npm test` (189 test) geçiyor
+
+---
+
+## OTP Süresiz + Developer Dismissal + Admin Özet
+
+**Hedef:** OTP kodları süresiz olsun (otomatik silme yok), developer feed'ini kendi yönetsin,
+admin uygulamaya gelen tüm OTP'leri tek ekranda görsün.
+
+**Yapılanlar:**
+- **Süresizlik:** `OTPLog.expiresAt` sütunu + index'i kaldırıldı; `TTL_SECONDS` sabiti,
+  `OTP_TTL_DAYS` env'i ve node-cron cleanup job'ı (`src/jobs/`) tamamen silindi. `findForDeveloper`
+  artık expiry filtrelemez; payload/history'den `expiresAt` çıktı — satırda `createdAt` gösterilir.
+- **Developer dismissal:** yeni `OtpDismissal` tablosu (`otpId + userId`, unique). `POST /api/otp/dismiss
+  { otpIds }` [DEVELOPER] seçilen OTP'leri developer'ın KENDİ feed'inden kaldırır (per-developer
+  yumuşak gizleme — kalıcı silme değil; receiver/admin görmeye devam eder). `findForDeveloper`
+  `dismissals: { none: { userId } }` ile bu kayıtları hariç tutar.
+- **Admin özet:** `GET /api/otp/history` artık ADMIN'e de açık — controller rol'e göre dallanır,
+  ADMIN → `getAllForProject` (projedeki tüm receiver'lardan gelen tüm OTP'ler, filtresiz).
+- Migration: `20260703090000_remove_otp_expiry_add_dismissal`.
+
+**Tamamlanma Kriterleri:**
+- [x] OTP'lerin `expiresAt`'i yok; eski `createdAt`'li kayıt bile feed'de kalır (otomatik düşmez)
+- [x] Cleanup cron / node-cron kod tabanında yok
+- [x] `POST /api/otp/dismiss` developer feed'inden kaldırır; receiver/admin görmeye devam eder
+- [x] Aynı OTP tekrar dismiss → idempotent (dismissed:0); RECEIVER dismiss edemez (403)
+- [x] ADMIN `GET /api/otp/history` → tüm receiver'ların OTP'leri (sharing-off dahil), proje izole
+- [x] Payload/history `createdAt` taşır, `expiresAt` taşımaz
+- [x] `npm run typecheck` + `lint` + `build` temiz, `npm test` (193 test) geçiyor
+
+---
+
 ## Notlar
 
-- Redis yok. 5-10 kullanıcı için PostgreSQL + in-memory Socket.IO + in-memory ServiceRegistry cache yeterli.
+- Redis yok. 5-10 kullanıcı için PostgreSQL + in-memory Socket.IO yeterli.
 - Socket.IO adapter geçişi: `io.adapter(createAdapter(pub, sub))` — 1 satır, geri kalan değişmez.
 - JWT verify sync — QA iç aracı için bottleneck değil. Profiling'de sorun görülürse async'e geç.
 - Mobil: `otpsplash-mobile` — ayrı repo, React Native + TypeScript. Üç ayrı rol arayüzü (Receiver/Developer/Admin) + Admin için ayrıca web dashboard.
 - Device Secret: hem Android hem iOS aynı modeli kullanır — tutarlı, tek middleware.
 - Grup kavramı opsiyoneldir — admin önce tek tek developer hedefleyebilir, istediğinde grup kısayoluna geçebilir.
-- Kova mantığı ayrı bir tablo değil, ServiceRegistry'nin `isActive: false` satırlarıdır — tek tablo, tek liste, admin için tek ekran.
-- Geçmişe dönük OTP kurtarma yapılmaz — admin yeni servis kuralı eklediğinde sadece o andan sonraki SMS'ler doğru yere akar.
-- İleride: Redis adapter, argon2 rehash, refresh token blacklist, key rotation, Device Secret lookup prefix optimizasyonu, ServiceRegistry cache'i Redis pub/sub ile invalidate etme (multi-instance senaryosunda).
+- İleride: Redis adapter, argon2 rehash, refresh token blacklist, key rotation, Device Secret lookup prefix optimizasyonu.

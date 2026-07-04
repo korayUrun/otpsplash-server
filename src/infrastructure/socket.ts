@@ -8,6 +8,7 @@ import {
 import { Role } from '@prisma/client';
 import { CONSTANTS } from '@config/constants';
 import { AuthenticationError } from '@errors/errors';
+import { ErrorCode } from '@errors/ErrorCode';
 import { tokenService } from '@modules/auth/token.service';
 import { logger } from '@infrastructure/logger';
 import type { JwtPayload } from '@app-types/index';
@@ -69,9 +70,44 @@ function extractToken(socket: AppSocket): string | null {
 }
 
 /**
+ * Handshake auth reddiyle client'a iletilen makine-okunur yük. Client "sessiz refresh mi,
+ * login'e mi" kararını hata METNİNE göre değil bu KODA göre verir (kırılgan string eşleştirmesi
+ * yerine). Socket.IO, `next(err)`'deki `err.data`'yı client'ın `connect_error` handler'ına iletir.
+ *
+ * Client sözleşmesi:
+ *   - `TOKEN_EXPIRED`             → access token'ı sessizce yenile (refresh akışı)
+ *   - `TOKEN_INVALID` / diğerleri → doğrudan login'e yönlendir
+ *
+ * (Not: access token'lar stateless olduğundan backend `TOKEN_REVOKED` üretmez; iptal edilmiş
+ * kabul edilecek her durum `TOKEN_INVALID` altında toplanır — client ikisini de login'e atar.)
+ */
+export interface SocketAuthErrorData {
+  code: ErrorCode;
+}
+
+/**
+ * Handshake reddini makine-okunur `data.code` ile zenginleştirip `next`'e iletir.
+ * AuthenticationError örneği KORUNUR (errorCode zaten TOKEN_EXPIRED/TOKEN_INVALID ayrımını
+ * taşır — token.service belirler), üstüne Socket.IO'nun client'a taşıdığı `data` alanı eklenir.
+ * Beklenmeyen (AuthenticationError olmayan) durumda genel AUTHENTICATION_FAILED ile reddedilir
+ * — arbitrer hata mesajları socket üzerinden client'a sızdırılmaz.
+ */
+function rejectWithCode(
+  next: (err?: ExtendedError) => void,
+  error: unknown,
+): void {
+  const authError =
+    error instanceof AuthenticationError ? error : new AuthenticationError();
+  const extended: ExtendedError = Object.assign(authError, {
+    data: { code: authError.errorCode } satisfies SocketAuthErrorData,
+  });
+  next(extended);
+}
+
+/**
  * Socket bağlantısı için JWT doğrulama middleware'i.
- * Token yoksa/geçersizse `next(error)` ile bağlantı reddedilir.
- * Başarılıysa `socket.data.user` doldurulur.
+ * Token yoksa/geçersizse `rejectWithCode` ile bağlantı reddedilir — red yükü makine-okunur
+ * `data.code` taşır (bkz. SocketAuthErrorData). Başarılıysa `socket.data.user` doldurulur.
  *
  * @remarks export edilir ki birim testi gerçek bağlantı kurmadan doğrulayabilsin.
  */
@@ -82,36 +118,43 @@ export function authenticateSocket(
   try {
     const token = extractToken(socket);
     if (!token) {
-      next(new AuthenticationError('Socket bağlantısı için token gerekli'));
+      rejectWithCode(
+        next,
+        new AuthenticationError('Socket bağlantısı için token gerekli'),
+      );
       return;
     }
     socket.data.user = tokenService.verifyAccessToken(token);
     next();
   } catch (error) {
-    // verifyAccessToken AuthenticationError fırlatır; beklenmeyenleri de güvenle reddet.
-    next(error instanceof Error ? error : new AuthenticationError());
+    // verifyAccessToken AuthenticationError fırlatır (TOKEN_EXPIRED/TOKEN_INVALID);
+    // beklenmeyenleri de güvenle, kodlu şekilde reddet.
+    rejectWithCode(next, error);
   }
 }
 
 /**
  * Doğrulanmış bağlantı için oda yönetimi.
- * DEVELOPER → `user:${userId}` odasına katılır (FAZ 7 hedefli dağıtım). RECEIVER hiçbir
- * odaya katılmaz (yalnızca OTP gönderir, almaz).
+ * DEVELOPER → `user:${userId}` odasına katılır (FAZ 7 hedefli dağıtım, routing hedefi).
+ * RECEIVER → aynı `user:${userId}` odasına katılır ki kendi cihazının ürettiği OTP'yi
+ * geçmişinde anında görsün (kendi odasına gelen `otp:received`). ADMIN hiçbir odaya katılmaz.
  *
- * Tek oda stratejisi: developer SADECE kendi `user:` odasına katılır, `project:` odasına
+ * Tek oda stratejisi: her kullanıcı SADECE kendi `user:` odasına katılır, `project:` odasına
  * AYRICA katılmaz — böylece aynı event'i iki kez alma riski doğmaz (CLAUDE.md "Sharing Durdurma").
+ * Developer ve receiver odaları ayrık hedeflenir: routing çıktısı (developer) `notify`, sahibi
+ * receiver ise `notifyReceiver` ile — bir kullanıcı tek rol taşıdığından çakışma olmaz.
  *
  * @remarks export edilir (birim testi).
  */
 export function handleConnection(socket: AppSocket): void {
   const { user } = socket.data;
 
-  if (user.role === Role.DEVELOPER) {
+  if (user.role === Role.DEVELOPER || user.role === Role.RECEIVER) {
     const room = CONSTANTS.SOCKET.userRoom(user.sub);
     void socket.join(room);
     logger.info(
-      { socketId: socket.id, userId: user.sub, room },
-      'developer socket bağlandı ve kullanıcı odasına katıldı',
+      { socketId: socket.id, userId: user.sub, role: user.role, room },
+      'socket bağlandı ve kullanıcı odasına katıldı',
     );
   } else {
     logger.info(
@@ -175,6 +218,23 @@ function emitOtp(targetUserIds: string[], payload: OtpNotification): number {
 }
 
 /**
+ * OTP'yi sahibi receiver'ın KENDİ `user:` odasına yayınlar (fire-and-forget, SYNC).
+ * `emitOtp` ile aynı `otp:received` event'ini kullanır ama tek hedef vardır: OTP'nin sahibi.
+ * `deliveredTo` sayımına DAHİL DEĞİLDİR — bu yalnızca receiver'ın kendi geçmişini canlı
+ * tutmak içindir, routing'den bağımsızdır (servis çözülmese/kural olmasa bile çağrılır).
+ * @param receiverId OTP'nin sahibi (`req.device.userId`) — kendi odasına gider.
+ */
+function emitToReceiver(receiverId: string, payload: OtpNotification): void {
+  if (!ioRef) {
+    logger.warn('socket başlatılmadı — receiver emit atlandı');
+    return;
+  }
+  ioRef
+    .to(CONSTANTS.SOCKET.userRoom(receiverId))
+    .emit(CONSTANTS.SOCKET.EVENT_OTP, payload);
+}
+
+/**
  * Paylaşımı durdurulan OTP için `otp:revoked` event'ini hedef developer'lara yayınlar.
  * SADECE `user:` odalarına gider (`otp:received` ile aynı hedefleme) — çift emit önlenir.
  * Event yalnızca UI senkronizasyonu içindir; developer'ın kodu daha önce görmüş olmasını geri almaz.
@@ -198,5 +258,6 @@ function emitRevoked(otpId: string, targetUserIds: string[]): void {
  */
 export const socketNotifier: IOtpNotifier = {
   notify: (targetUserIds, payload) => emitOtp(targetUserIds, payload),
+  notifyReceiver: (receiverId, payload) => emitToReceiver(receiverId, payload),
   notifyRevoked: (otpId, targetUserIds) => emitRevoked(otpId, targetUserIds),
 };

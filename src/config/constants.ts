@@ -16,6 +16,10 @@ export const CONSTANTS = {
     ALGORITHM: 'aes-256-gcm',
     /** Şifreli kayıt bileşen ayıracı: base64(iv):base64(authTag):base64(ciphertext). */
     SEPARATOR: ':',
+    /** senderRaw etiketinin üst sınırı (karakter) — DB otp_logs.senderRaw VarChar(255) ile hizalı. */
+    SENDER_MAX_LENGTH: 255,
+    /** Opsiyonel context etiketinin üst sınırı (karakter) — DB otp_logs.context VarChar(120) ile hizalı. */
+    CONTEXT_MAX_LENGTH: 120,
   },
   ARGON2: {
     /** OWASP 2024 önerisi — argon2id. */
@@ -62,19 +66,14 @@ export const CONSTANTS = {
     /** Telefon numarası üst sınırı — DB şemasındaki VarChar(32) ile hizalı. */
     PHONE_MAX_LENGTH: 32,
   },
-  REGISTRY: {
+  SENDER_PATTERN: {
     /**
-     * senderPattern/keywordPattern üst sınırı (karakter). ReDoS koruması: kısa pattern,
-     * catastrophic backtracking yüzeyini küçültür (CLAUDE.md "senderPattern — ReDoS Koruması").
+     * `GET /api/otp/sender-patterns` Cache-Control — ortama göre seçilir (controller):
+     *  - PROD: liste statik olduğundan kısa süreli cache güvenli (proxy/CDN yararlanır).
+     *  - DEV/TEST: `no-store` — iOS Shortcut/URLSession cevabı ~5 dk cache'leyip pattern
+     *    değişikliklerinde eski listeyi göstermesin (aksi halde test sırasında kafa karıştırır).
      */
-    PATTERN_MAX_LENGTH: 200,
-    /** Servis adı üst sınırı — DB şemasındaki VarChar(100) ile hizalı. */
-    NAME_MAX_LENGTH: 100,
-    /** senderRaw/serviceHint sinyallerinin üst sınırı (DB lastSeenSender VarChar(255)). */
-    SIGNAL_MAX_LENGTH: 255,
-  },
-  TIME: {
-    /** Bir günün milisaniye karşılığı (OTP TTL hesabı). */
-    DAY_MS: 24 * 60 * 60 * 1000,
+    CACHE_CONTROL_PROD: 'public, max-age=300',
+    CACHE_CONTROL_DEV: 'no-store',
   },
 } as const;

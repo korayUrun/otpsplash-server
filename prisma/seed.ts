@@ -26,11 +26,19 @@ const TEST_USERS: ReadonlyArray<{ email: string; name: string; role: Role }> = [
  *   (upsert.update boş) — mevcut parolalar korunur, tekrar çalıştırmak güvenlidir.
  */
 async function main(): Promise<void> {
+  // Demo proje aynı zamanda self-register'ın bağlanacağı VARSAYILAN projedir (isDefault).
+  // Partial unique index en fazla bir default'a izin verir; idempotent olarak set edilir.
   const existing = await prisma.project.findFirst({
     where: { name: DEMO_PROJECT_NAME },
   });
-  const project =
-    existing ?? (await prisma.project.create({ data: { name: DEMO_PROJECT_NAME } }));
+  const project = existing
+    ? await prisma.project.update({
+        where: { id: existing.id },
+        data: { isDefault: true },
+      })
+    : await prisma.project.create({
+        data: { name: DEMO_PROJECT_NAME, isDefault: true },
+      });
 
   const hashed = await passwordService.hash(TEST_PASSWORD);
 
@@ -46,7 +54,7 @@ async function main(): Promise<void> {
   console.log(
     [
       'Seed tamam.',
-      `  Demo proje id : ${project.id}   (mobil signup'ta projectId olarak kullan)`,
+      `  Demo proje id : ${project.id}   (varsayılan proje — self-register buraya bağlanır)`,
       `  Test parolası : ${TEST_PASSWORD}   (üç hesap için de aynı)`,
       ...TEST_USERS.map((u) => `  ${u.role.padEnd(9)} : ${u.email}`),
     ].join('\n'),

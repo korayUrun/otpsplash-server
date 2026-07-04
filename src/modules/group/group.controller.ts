@@ -86,4 +86,22 @@ export class GroupController {
     }
     res.status(200).json({ success: true, data: result.data, requestId: req.id });
   };
+
+  delete = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!req.user) {
+      next(new AuthenticationError('Kimlik doğrulama gerekli'));
+      return;
+    }
+
+    const { id } = req.params as unknown as GroupIdParams;
+    const result = await this.groupService.delete({
+      groupId: id,
+      projectId: req.user.projectId,
+    });
+    if (!result.success) {
+      next(result.error);
+      return;
+    }
+    res.status(200).json({ success: true, data: result.data, requestId: req.id });
+  };
 }

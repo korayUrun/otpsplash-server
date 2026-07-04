@@ -1,9 +1,13 @@
 import request from 'supertest';
-import { Role } from '@prisma/client';
+import { Role, RoutingTarget } from '@prisma/client';
 import { prisma } from '@config/prisma';
 import { tokenService } from '@modules/auth/token.service';
 import { createApp } from '../../src/app';
-import { createTestGroup, createTestUser } from '../helpers/fixtures';
+import {
+  createTestGroup,
+  createTestRoutingRule,
+  createTestUser,
+} from '../helpers/fixtures';
 import {
   getAdminToken,
   getDeveloperToken,
@@ -161,6 +165,72 @@ describe('DELETE /api/groups/:id/members/:uid', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('USER_NOT_FOUND');
+  });
+});
+
+describe('DELETE /api/groups/:id', () => {
+  it('200 — ADMIN grubu siler; üyelikler ve hedef kurallar cascade ile temizlenir', async () => {
+    const admin = await getAdminToken();
+    const group = await createTestGroup({ projectId: admin.project.id });
+    const dev = await userInProject(admin, Role.DEVELOPER);
+    await prisma.groupMember.create({
+      data: { groupId: group.id, userId: dev.id },
+    });
+
+    // Bu grubu hedefleyen bir routing kuralı — silme sonrası dangling kalmamalı.
+    const receiver = await userInProject(admin, Role.RECEIVER);
+    const rule = await createTestRoutingRule({
+      receiverId: receiver.id,
+      targetType: RoutingTarget.GROUP,
+      groupId: group.id,
+    });
+
+    const res = await request(app)
+      .delete(`/api/groups/${group.id}`)
+      .set('Authorization', `Bearer ${admin.accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(await prisma.group.findUnique({ where: { id: group.id } })).toBeNull();
+    expect(
+      await prisma.groupMember.findFirst({ where: { groupId: group.id } }),
+    ).toBeNull();
+    // FK cascade: bu grubu hedefleyen kural da silindi (dangling kural kalmadı).
+    expect(
+      await prisma.routingRule.findUnique({ where: { id: rule.id } }),
+    ).toBeNull();
+  });
+
+  it('403 — DEVELOPER grup silemez', async () => {
+    const admin = await getAdminToken();
+    const group = await createTestGroup({ projectId: admin.project.id });
+    const dev = await userInProject(admin, Role.DEVELOPER);
+
+    const res = await request(app)
+      .delete(`/api/groups/${group.id}`)
+      .set('Authorization', `Bearer ${dev.token}`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(
+      await prisma.group.findUnique({ where: { id: group.id } }),
+    ).not.toBeNull();
+  });
+
+  it('404 — başka projenin grubu silinemez (GROUP_NOT_FOUND)', async () => {
+    const admin = await getAdminToken();
+    const other = await getAdminToken(); // farklı proje
+    const group = await createTestGroup({ projectId: other.project.id });
+
+    const res = await request(app)
+      .delete(`/api/groups/${group.id}`)
+      .set('Authorization', `Bearer ${admin.accessToken}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('GROUP_NOT_FOUND');
+    // Proje izolasyonu: başka projenin grubu silinmedi.
+    expect(
+      await prisma.group.findUnique({ where: { id: group.id } }),
+    ).not.toBeNull();
   });
 });
 

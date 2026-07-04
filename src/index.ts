@@ -1,15 +1,12 @@
 import type { Server as HttpServer } from 'node:http';
-import type { ScheduledTask } from 'node-cron';
 import { createApp } from './app';
 import { env } from '@config/env';
 import { prisma } from '@config/prisma';
 import { logger } from '@infrastructure/logger';
-import { startCleanupJob } from '@jobs/cleanup.job';
 
 /** Graceful shutdown'da kapatılacak kaynaklar. */
 interface Runtime {
   httpServer: HttpServer;
-  cleanupTask: ScheduledTask;
 }
 
 let runtime: Runtime | undefined;
@@ -31,14 +28,11 @@ async function bootstrap(): Promise<void> {
     });
   });
 
-  // 3) Cron job'larını başlat.
-  const cleanupTask = startCleanupJob();
-
-  runtime = { httpServer, cleanupTask };
+  runtime = { httpServer };
 }
 
 /**
- * Kaynakları sırayla kapatır: cron → HTTP → Prisma.
+ * Kaynakları sırayla kapatır: HTTP → Prisma.
  * İkinci sinyal gelirse tekrar girmez (idempotent).
  */
 async function shutdown(signal: string): Promise<void> {
@@ -48,7 +42,6 @@ async function shutdown(signal: string): Promise<void> {
 
   try {
     if (runtime) {
-      runtime.cleanupTask.stop();
       await new Promise<void>((resolve, reject) => {
         runtime!.httpServer.close((err) => (err ? reject(err) : resolve()));
       });

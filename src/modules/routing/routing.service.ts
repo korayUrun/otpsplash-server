@@ -48,24 +48,15 @@ export class RoutingService implements IRoutingService {
         );
       }
 
-      // 2) Servis projede mi?
-      const service = await this.repository.findServiceById(dto.serviceId);
-      if (!service || service.projectId !== dto.projectId) {
-        return fail(
-          new NotFoundError('Servis bulunamadı', ErrorCode.SERVICE_NOT_FOUND),
-        );
-      }
-
-      // 3) Hedef doğrulama + çakışma kontrolü (hedef tipine göre).
+      // 2) Hedef doğrulama + çakışma kontrolü (hedef tipine göre).
       const targetCheck = await this.validateTarget(dto);
       if (!targetCheck.success) {
         return targetCheck;
       }
 
-      // 4) Oluştur — DB partial unique index P2002 da yakalanır (çift katmanlı koruma).
+      // 3) Oluştur — DB partial unique index P2002 da yakalanır (çift katmanlı koruma).
       const rule = await this.repository.create({
         receiverId: dto.receiverId,
-        serviceId: dto.serviceId,
         targetType: dto.targetType,
         developerId:
           dto.targetType === RoutingTarget.DEVELOPER ? dto.developerId ?? null : null,
@@ -76,7 +67,6 @@ export class RoutingService implements IRoutingService {
         {
           ruleId: rule.id,
           receiverId: dto.receiverId,
-          serviceId: dto.serviceId,
           targetType: dto.targetType,
         },
         'yönlendirme kuralı oluşturuldu',
@@ -172,13 +162,12 @@ export class RoutingService implements IRoutingService {
       }
       const existing = await this.repository.findDeveloperRule(
         dto.receiverId,
-        dto.serviceId,
         dto.developerId,
       );
       if (existing) {
         return fail(
           new ConflictError(
-            'Bu (receiver, servis, developer) kuralı zaten mevcut',
+            'Bu (receiver, developer) kuralı zaten mevcut',
             ErrorCode.ROUTING_RULE_CONFLICT,
           ),
         );
@@ -198,13 +187,12 @@ export class RoutingService implements IRoutingService {
     }
     const existing = await this.repository.findGroupRule(
       dto.receiverId,
-      dto.serviceId,
       dto.groupId,
     );
     if (existing) {
       return fail(
         new ConflictError(
-          'Bu (receiver, servis, grup) kuralı zaten mevcut',
+          'Bu (receiver, grup) kuralı zaten mevcut',
           ErrorCode.ROUTING_RULE_CONFLICT,
         ),
       );
@@ -253,8 +241,6 @@ export class RoutingService implements IRoutingService {
       id: rule.id,
       receiverId: rule.receiverId,
       receiverEmail: rule.receiver.email,
-      serviceId: rule.serviceId,
-      serviceName: rule.service.name,
       targetType: rule.targetType,
       developerId: rule.developerId,
       developerEmail: rule.developerId

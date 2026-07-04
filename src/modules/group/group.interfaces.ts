@@ -34,6 +34,13 @@ export interface RemoveMemberDTO {
   projectId: string;
 }
 
+/** `DELETE /api/groups/:id` iş katmanı girişi. */
+export interface DeleteGroupDTO {
+  groupId: string;
+  /** İşlemi yapan admin'in projesi — grup bu projeye ait olmalı (izolasyon). */
+  projectId: string;
+}
+
 /** Grup üyesinin salt-okunur görünümü (parola sızdırılmaz). */
 export interface GroupMemberView {
   userId: string;
@@ -80,6 +87,11 @@ export interface IGroupRepository {
   addMember(groupId: string, userId: string): Promise<GroupMember>;
   /** Gruptan üyeyi çıkarır. */
   removeMember(groupId: string, userId: string): Promise<void>;
+  /**
+   * Grubu siler. DB seviyesinde FK cascade ile üyelikler (`group_members`) ve bu grubu
+   * hedefleyen yönlendirme kuralları (`routing_rules`) da silinir — dangling kural kalmaz.
+   */
+  delete(groupId: string): Promise<void>;
 }
 
 /**
@@ -95,6 +107,12 @@ export interface IGroupService {
   addMember(dto: AddMemberDTO): Promise<Result<GroupMutationResult>>;
   /** Gruptan üye çıkarır; üye değilse → NotFoundError. */
   removeMember(dto: RemoveMemberDTO): Promise<Result<GroupMutationResult>>;
+  /**
+   * Grubu siler (yalnızca ADMIN, kendi projesindeki grup). Üyelikler ve bu grubu
+   * hedefleyen yönlendirme kuralları FK cascade ile birlikte temizlenir.
+   * Grup yok/başka projede → NotFoundError.
+   */
+  delete(dto: DeleteGroupDTO): Promise<Result<GroupMutationResult>>;
   /** Projedeki grupları salt-okunur listeler (admin + receiver görebilir). */
   listForProject(projectId: string): Promise<Result<GroupView[]>>;
 }

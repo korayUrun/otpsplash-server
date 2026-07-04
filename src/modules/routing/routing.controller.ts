@@ -24,7 +24,6 @@ export class RoutingController {
     const body = req.body as CreateRoutingRuleBody;
     const result = await this.routingService.createRule({
       receiverId: body.receiverId,
-      serviceId: body.serviceId,
       targetType: body.targetType,
       developerId: body.developerId,
       groupId: body.groupId,

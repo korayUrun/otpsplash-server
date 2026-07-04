@@ -8,32 +8,23 @@ import type {
 
 /**
  * Yönlendirme çözümleyici.
- * Bir receiver+servis için aktif kuralları çekip (ASYNC, DB) hedef developer'ları
- * bellekte flatten + dedupe eder (SYNC). Bir developer hem doğrudan hem grup üzerinden
- * hedeflenmiş olabilir; `Set` ile id bazında tekilleştirilir.
+ * Bir receiver için aktif kuralları çekip (ASYNC, DB) hedef developer'ları bellekte
+ * flatten + dedupe eder (SYNC). Bir developer hem doğrudan hem grup üzerinden hedeflenmiş
+ * olabilir; `Set` ile id bazında tekilleştirilir.
  *
- * `serviceId` null ise (servis çözülememiş) hiç kural eşleşmez → boş liste döner;
- * bu, FAZ 7'deki "kural yoksa kimseye gitmez" davranışıyla tutarlıdır.
+ * Receiver'ın hiç aktif kuralı yoksa boş liste döner — bu, "kural yoksa kimseye gitmez"
+ * davranışıyla tutarlıdır.
  */
 export class RoutingResolver implements IRoutingResolver {
   constructor(private readonly repository: IRoutingRepository) {}
 
-  async resolveTargets(
-    receiverId: string,
-    serviceId: string | null,
-  ): Promise<string[]> {
-    if (!serviceId) {
-      return [];
-    }
-    const rules = await this.repository.findActiveTargets(receiverId, serviceId);
+  async resolveTargets(receiverId: string): Promise<string[]> {
+    const rules = await this.repository.findActiveTargets(receiverId);
     return this.flattenIds(rules);
   }
 
-  async resolveTargetDetails(
-    receiverId: string,
-    serviceId: string | null,
-  ): Promise<TargetUser[]> {
-    const ids = await this.resolveTargets(receiverId, serviceId);
+  async resolveTargetDetails(receiverId: string): Promise<TargetUser[]> {
+    const ids = await this.resolveTargets(receiverId);
     if (ids.length === 0) {
       return [];
     }
@@ -44,6 +35,11 @@ export class RoutingResolver implements IRoutingResolver {
       email: user.email,
       name: user.name,
     }));
+  }
+
+  async resolveVisibleReceiverIds(developerId: string): Promise<string[]> {
+    // Repository DB seviyesinde `distinct` uygular — tekilleştirme gerekmez.
+    return this.repository.findReceiverIdsForDeveloper(developerId);
   }
 
   /** Aktif kuralları benzersiz hedef developer id listesine indirger (SYNC). */

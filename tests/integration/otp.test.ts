@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { Role, RoutingTarget, Source, type ServiceRegistry } from '@prisma/client';
+import { Role, RoutingTarget, Source } from '@prisma/client';
 import { prisma } from '@config/prisma';
 import { CONSTANTS } from '@config/constants';
 import { AesGcmOtpEncryptor } from '@modules/otp/otp.encryptor';
@@ -7,14 +7,14 @@ import { tokenService } from '@modules/auth/token.service';
 import { createApp } from '../../src/app';
 import {
   createTestDevice,
+  createTestGroup,
   createTestOtpLog,
   createTestProject,
   createTestRoutingRule,
-  createTestService,
   createTestUser,
 } from '../helpers/fixtures';
 import {
-  getDeveloperToken,
+  getAdminToken,
   getDeviceSecret,
   getReceiverToken,
 } from '../helpers/auth.helper';
@@ -29,8 +29,12 @@ afterAll(() => {
   io.close();
 });
 
-/** Aynı projede receiver + developer (token'lı) kurar — sharing/history senaryoları için. */
-async function projectWithReceiverAndDeveloper(): Promise<{
+/**
+ * Aynı projede receiver + developer (token'lı) kurar ve receiver'ın kodlarını developer'a
+ * yönlendiren AKTİF bir DEVELOPER kuralı ekler (servis kavramı yok — kural receiver bazlıdır).
+ * Developer history'si canlı emit ile aynı routing çözümüne göre süzülür (kural yoksa boş feed).
+ */
+async function projectWithRoutedDeveloper(): Promise<{
   projectId: string;
   receiver: { id: string; token: string };
   developer: { id: string; token: string };
@@ -39,10 +43,17 @@ async function projectWithReceiverAndDeveloper(): Promise<{
   const { user: receiver } = await createTestUser({
     projectId: project.id,
     role: Role.RECEIVER,
+    name: 'Alice',
+    phoneNumber: '+905550001122',
   });
   const { user: developer } = await createTestUser({
     projectId: project.id,
     role: Role.DEVELOPER,
+  });
+  await createTestRoutingRule({
+    receiverId: receiver.id,
+    targetType: RoutingTarget.DEVELOPER,
+    developerId: developer.id,
   });
   const sign = (u: typeof receiver): string =>
     tokenService.generateAccessToken({
@@ -58,40 +69,6 @@ async function projectWithReceiverAndDeveloper(): Promise<{
   };
 }
 
-/**
- * Bir koşul sağlanana kadar kısa aralıklarla bekler.
- * Kova kayıtları (recordUnmatched) fire-and-forget yazıldığından, HTTP yanıtı döndükten
- * sonra satırın belirmesi bir tık gecikebilir — bu yardımcı yarışı deterministik kılar.
- */
-async function waitFor<T>(
-  fn: () => Promise<T | null>,
-  timeoutMs = 3000,
-): Promise<T> {
-  const start = Date.now();
-  for (;;) {
-    const result = await fn();
-    if (result !== null) {
-      return result;
-    }
-    if (Date.now() - start > timeoutMs) {
-      throw new Error('waitFor: koşul zaman aşımına uğradı');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
-/** Bir projede senderPattern'i `senderRaw`'ı tanıyan aktif servis kurar. */
-function createMatchingService(
-  projectId: string,
-  senderRaw: string,
-): Promise<ServiceRegistry> {
-  return createTestService({
-    projectId,
-    name: 'Binance',
-    senderPattern: `^${senderRaw}$`,
-  });
-}
-
 describe('POST /api/otp', () => {
   it('200 — geçerli X-Device-Secret + code + senderRaw', async () => {
     const { deviceSecret } = await getDeviceSecret();
@@ -104,7 +81,7 @@ describe('POST /api/otp', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.message).toEqual(expect.any(String));
-    // Eşleşen servis/kural yok → kimseye gitmez.
+    // Receiver'a kural yok → kimseye gitmez.
     expect(res.body.data.deliveredTo).toBe(0);
     expect(res.body.requestId).toEqual(expect.any(String));
   });
@@ -221,8 +198,58 @@ describe('POST /api/otp', () => {
     expect(encryptor.decrypt(stored!.encryptedCode)).toBe(plain);
     // Kaynak izleme: kayıt doğru cihaza işaret eder.
     expect(stored?.deviceId).toBe(device.id);
-    // Ham gönderici fallback etiketi olarak kalıcılaştırılır (servis çözülemese de).
+    // Ham gönderici etiketi olarak kalıcılaştırılır.
     expect(stored?.senderRaw).toBe('TESTSENDER');
+  });
+
+  it('opsiyonel context gelirse saklanır', async () => {
+    const { deviceSecret, project } = await getDeviceSecret();
+
+    await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, deviceSecret)
+      .send({
+        code: '847291',
+        source: Source.ANDROID,
+        senderRaw: 'TESTSENDER',
+        context: 'Staging OTP',
+      });
+
+    const stored = await prisma.oTPLog.findFirst({
+      where: { projectId: project.id },
+    });
+    expect(stored?.context).toBe('Staging OTP');
+  });
+
+  it('context gelmezse null saklanır', async () => {
+    const { deviceSecret, project } = await getDeviceSecret();
+
+    await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, deviceSecret)
+      .send({ code: '847291', source: Source.ANDROID, senderRaw: 'TESTSENDER' });
+
+    const stored = await prisma.oTPLog.findFirst({
+      where: { projectId: project.id },
+    });
+    expect(stored?.context).toBeNull();
+  });
+
+  it('400 — context 120 karakteri aşarsa (VALIDATION_ERROR)', async () => {
+    const { deviceSecret } = await getDeviceSecret();
+
+    const res = await request(app)
+      .post('/api/otp')
+      .set(SECRET_HEADER, deviceSecret)
+      .send({
+        code: '847291',
+        source: Source.ANDROID,
+        senderRaw: 'TESTSENDER',
+        context: 'x'.repeat(CONSTANTS.OTP.CONTEXT_MAX_LENGTH + 1),
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('429 — rate limit aşılınca', async () => {
@@ -239,17 +266,15 @@ describe('POST /api/otp', () => {
   });
 });
 
-describe('POST /api/otp — servis çözümleme + routing (FAZ 8)', () => {
-  it('tanınan senderRaw → serviceId çözülür ve hedef developer\'a iletilir (deliveredTo=1)', async () => {
+describe('POST /api/otp — receiver bazlı routing', () => {
+  it('receiver\'ın kuralı varsa hedef developer\'a iletilir (deliveredTo=1)', async () => {
     const ctx = await getDeviceSecret();
     const { user: developer } = await createTestUser({
       projectId: ctx.project.id,
       role: Role.DEVELOPER,
     });
-    const service = await createMatchingService(ctx.project.id, 'BINANCE');
     await createTestRoutingRule({
       receiverId: ctx.user.id,
-      serviceId: service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: developer.id,
     });
@@ -265,43 +290,7 @@ describe('POST /api/otp — servis çözümleme + routing (FAZ 8)', () => {
     const stored = await prisma.oTPLog.findFirst({
       where: { receiverId: ctx.user.id },
     });
-    expect(stored?.serviceId).toBe(service.id);
-  });
-
-  it('serviceHint yedek sinyali → keywordPattern ile çözülür', async () => {
-    const ctx = await getDeviceSecret();
-    const { user: developer } = await createTestUser({
-      projectId: ctx.project.id,
-      role: Role.DEVELOPER,
-    });
-    const service = await createTestService({
-      projectId: ctx.project.id,
-      name: 'Garanti',
-      keywordPattern: 'garanti',
-    });
-    await createTestRoutingRule({
-      receiverId: ctx.user.id,
-      serviceId: service.id,
-      targetType: RoutingTarget.DEVELOPER,
-      developerId: developer.id,
-    });
-
-    const res = await request(app)
-      .post('/api/otp')
-      .set(SECRET_HEADER, ctx.deviceSecret)
-      .send({
-        code: '123456',
-        source: Source.ANDROID,
-        senderRaw: '+905551112233', // gönderici tanınmaz
-        serviceHint: 'garanti girişiniz', // yedek sinyal eşleşir
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body.data.deliveredTo).toBe(1);
-    const stored = await prisma.oTPLog.findFirst({
-      where: { receiverId: ctx.user.id },
-    });
-    expect(stored?.serviceId).toBe(service.id);
+    expect(stored?.senderRaw).toBe('BINANCE');
   });
 
   it('hedeflenmeyen developer bildirim almaz — deliveredTo yalnızca kuraldaki hedefi sayar', async () => {
@@ -312,10 +301,8 @@ describe('POST /api/otp — servis çözümleme + routing (FAZ 8)', () => {
     });
     // Kurala dahil OLMAYAN ikinci developer — bildirim almamalı.
     await createTestUser({ projectId: ctx.project.id, role: Role.DEVELOPER });
-    const service = await createMatchingService(ctx.project.id, 'BINANCE');
     await createTestRoutingRule({
       receiverId: ctx.user.id,
-      serviceId: service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: targeted.id,
     });
@@ -329,7 +316,7 @@ describe('POST /api/otp — servis çözümleme + routing (FAZ 8)', () => {
     expect(res.body.data.deliveredTo).toBe(1);
   });
 
-  it('tanınmayan senderRaw → serviceId null, kimseye gitmez, kova satırı oluşur', async () => {
+  it('receiver\'ın kuralı yoksa kimseye gitmez ama OTP kaydedilir (deliveredTo=0)', async () => {
     const ctx = await getDeviceSecret();
 
     const res = await request(app)
@@ -343,68 +330,18 @@ describe('POST /api/otp — servis çözümleme + routing (FAZ 8)', () => {
     const stored = await prisma.oTPLog.findFirst({
       where: { receiverId: ctx.user.id },
     });
-    expect(stored?.serviceId).toBeNull();
-
-    // Kova satırı fire-and-forget yazılır → belirmesini bekle.
-    const bucket = await waitFor(() =>
-      prisma.serviceRegistry.findFirst({
-        where: {
-          projectId: ctx.project.id,
-          isActive: false,
-          lastSeenSender: 'UNKNOWNCO',
-        },
-      }),
-    );
-    expect(bucket.name).toBeNull();
-    expect(bucket.unmatchedCount).toBe(1);
+    expect(stored).not.toBeNull();
+    expect(stored?.senderRaw).toBe('UNKNOWNCO');
   });
 
-  it('aynı tanınmayan senderRaw tekrar → yeni satır açılmaz, sayaç artar', async () => {
-    const ctx = await getDeviceSecret();
-
-    await request(app)
-      .post('/api/otp')
-      .set(SECRET_HEADER, ctx.deviceSecret)
-      .send({ code: '111111', source: Source.ANDROID, senderRaw: 'REPEATCO' });
-
-    // İlk kova kaydının yazılmasını bekle (yarışı önler — ikinci POST mevcut satırı bulmalı).
-    await waitFor(() =>
-      prisma.serviceRegistry.findFirst({
-        where: { projectId: ctx.project.id, lastSeenSender: 'REPEATCO' },
-      }),
-    );
-
-    await request(app)
-      .post('/api/otp')
-      .set(SECRET_HEADER, ctx.deviceSecret)
-      .send({ code: '222222', source: Source.ANDROID, senderRaw: 'REPEATCO' });
-
-    // Sayaç 2'ye çıkana kadar bekle.
-    const bucket = await waitFor(async () => {
-      const row = await prisma.serviceRegistry.findFirst({
-        where: { projectId: ctx.project.id, lastSeenSender: 'REPEATCO' },
-      });
-      return row && row.unmatchedCount >= 2 ? row : null;
-    });
-    expect(bucket.unmatchedCount).toBe(2);
-
-    // Tek satır olmalı — tekrar eden sinyal yeni satır açmaz.
-    const count = await prisma.serviceRegistry.count({
-      where: { projectId: ctx.project.id, lastSeenSender: 'REPEATCO' },
-    });
-    expect(count).toBe(1);
-  });
-
-  it('aktif kural yoksa (servis çözülse bile) iletilmez (deliveredTo=0)', async () => {
+  it('pasif kural → iletilmez (deliveredTo=0), OTP yine kaydedilir', async () => {
     const ctx = await getDeviceSecret();
     const { user: developer } = await createTestUser({
       projectId: ctx.project.id,
       role: Role.DEVELOPER,
     });
-    const service = await createMatchingService(ctx.project.id, 'BINANCE');
     await createTestRoutingRule({
       receiverId: ctx.user.id,
-      serviceId: service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: developer.id,
       isActive: false,
@@ -420,19 +357,27 @@ describe('POST /api/otp — servis çözümleme + routing (FAZ 8)', () => {
     const stored = await prisma.oTPLog.findFirst({
       where: { receiverId: ctx.user.id },
     });
-    expect(stored?.serviceId).toBe(service.id);
+    expect(stored).not.toBeNull();
   });
 });
 
-describe('GET /api/otp/history', () => {
-  it('200 — DEVELOPER kendi projesinin geçmişini görür', async () => {
-    const { accessToken, project } = await getDeveloperToken();
-    await createTestOtpLog({ projectId: project.id, code: '111111' });
-    await createTestOtpLog({ projectId: project.id, code: '222222' });
+describe('GET /api/otp/history — DEVELOPER routing-süzülü feed', () => {
+  it('200 — developer yalnızca kendisine yönlendirilen receiver\'ların kodlarını görür', async () => {
+    const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
+    await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+      code: '111111',
+    });
+    await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+      code: '222222',
+    });
 
     const res = await request(app)
       .get('/api/otp/history')
-      .set('Authorization', `Bearer ${accessToken}`);
+      .set('Authorization', `Bearer ${developer.token}`);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -443,40 +388,101 @@ describe('GET /api/otp/history', () => {
     expect(res.body.pagination.total).toBe(2);
   });
 
-  it('serviceName çözülmüş kayıtta döner; senderRaw fallback olarak yanında gelir', async () => {
-    const { accessToken, project } = await getDeveloperToken();
-    const service = await createTestService({ projectId: project.id, name: 'Binance' });
-    await createTestOtpLog({
-      projectId: project.id,
-      code: '111111',
-      serviceId: service.id,
-      senderRaw: 'BINANCE',
+  it('kural yok → boş feed (kod başka developer\'a yönlendirilmiş olsa bile)', async () => {
+    const { projectId, receiver } = await projectWithRoutedDeveloper();
+    // Aynı projede, hiçbir kurala dahil OLMAYAN ikinci developer.
+    const { user: outsider } = await createTestUser({
+      projectId,
+      role: Role.DEVELOPER,
     });
+    const outsiderToken = tokenService.generateAccessToken({
+      sub: outsider.id,
+      email: outsider.email,
+      role: outsider.role,
+      projectId: outsider.projectId,
+    });
+    // Kod, kuraldaki developer'a yönlendirilir — outsider'ın kapsamında değil.
+    await createTestOtpLog({ projectId, receiverId: receiver.id });
 
     const res = await request(app)
       .get('/api/otp/history')
-      .set('Authorization', `Bearer ${accessToken}`);
+      .set('Authorization', `Bearer ${outsiderToken}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.data[0].serviceName).toBe('Binance');
-    expect(res.body.data[0].senderRaw).toBe('BINANCE');
+    expect(res.body.data).toHaveLength(0);
+    expect(res.body.pagination.total).toBe(0);
   });
 
-  it('servis çözülemeyen kayıt → serviceName null, senderRaw ham gönderici döner', async () => {
-    const { accessToken, project } = await getDeveloperToken();
+  it('grup üyeliğiyle yönlendirilen developer da görür', async () => {
+    const project = await createTestProject();
+    const { user: receiver } = await createTestUser({
+      projectId: project.id,
+      role: Role.RECEIVER,
+    });
+    const { user: developer } = await createTestUser({
+      projectId: project.id,
+      role: Role.DEVELOPER,
+    });
+    const group = await createTestGroup({ projectId: project.id });
+    await prisma.groupMember.create({
+      data: { groupId: group.id, userId: developer.id },
+    });
+    await createTestRoutingRule({
+      receiverId: receiver.id,
+      targetType: RoutingTarget.GROUP,
+      groupId: group.id,
+    });
     await createTestOtpLog({
       projectId: project.id,
-      code: '222222',
-      senderRaw: '+905551112233',
+      receiverId: receiver.id,
+      code: '111111',
+    });
+
+    const token = tokenService.generateAccessToken({
+      sub: developer.id,
+      email: developer.email,
+      role: developer.role,
+      projectId: developer.projectId,
+    });
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].code).toBe('111111');
+  });
+
+  it('developer "kimden geldi"yi görür: receiver{name,email,phoneNumber} + device{name} + senderRaw', async () => {
+    const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
+    const { device } = await createTestDevice({
+      userId: receiver.id,
+      projectId,
+      deviceName: 'İş Telefonum',
+    });
+    await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+      deviceId: device.id,
+      code: '111111',
+      senderRaw: 'BINANCE',
+      context: 'Prod login testi',
     });
 
     const res = await request(app)
       .get('/api/otp/history')
-      .set('Authorization', `Bearer ${accessToken}`);
+      .set('Authorization', `Bearer ${developer.token}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.data[0].serviceName).toBeNull();
-    expect(res.body.data[0].senderRaw).toBe('+905551112233');
+    const item = res.body.data[0];
+    expect(item.senderRaw).toBe('BINANCE');
+    expect(item.context).toBe('Prod login testi');
+    expect(item.receiver).toEqual({
+      name: 'Alice',
+      email: expect.any(String),
+      phoneNumber: '+905550001122',
+    });
+    expect(item.device).toEqual({ name: 'İş Telefonum' });
   });
 
   it('401 — token yok', async () => {
@@ -484,35 +490,50 @@ describe('GET /api/otp/history', () => {
     expect(res.status).toBe(401);
   });
 
-  it('süresi dolmuş OTP geçmişte görünmez', async () => {
-    const { accessToken, project } = await getDeveloperToken();
-    await createTestOtpLog({ projectId: project.id, code: '111111' });
-    await createTestOtpLog({
-      projectId: project.id,
-      code: '999999',
-      expiresAt: new Date(Date.now() - 1000), // süresi geçmiş
+  it('OTP süresiz — createdAt eski olsa bile feed\'de kalır (otomatik düşmez)', async () => {
+    const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
+    // createdAt'i günler öncesine çek — eskiden expiry ile düşerdi, artık kalmalı.
+    const { otpLog } = await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+      code: '111111',
+    });
+    await prisma.oTPLog.update({
+      where: { id: otpLog.id },
+      data: { createdAt: new Date('2020-01-01T00:00:00.000Z') },
     });
 
     const res = await request(app)
       .get('/api/otp/history')
-      .set('Authorization', `Bearer ${accessToken}`);
+      .set('Authorization', `Bearer ${developer.token}`);
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
     expect(res.body.data[0].code).toBe('111111');
   });
 
-  it('proje izolasyonu — başka projenin OTP`leri görünmez', async () => {
-    const dev = await getDeveloperToken();
-    const other = await getReceiverToken();
-    await createTestOtpLog({ projectId: other.project.id, code: '777777' });
+  it('proje izolasyonu — developer başka projenin kodlarını asla görmez', async () => {
+    const own = await projectWithRoutedDeveloper();
+    await createTestOtpLog({
+      projectId: own.projectId,
+      receiverId: own.receiver.id,
+      code: '111111',
+    });
+    // Başka bir projede tamamen ayrı bir routed kurulum + kod.
+    const foreign = await projectWithRoutedDeveloper();
+    await createTestOtpLog({
+      projectId: foreign.projectId,
+      receiverId: foreign.receiver.id,
+      code: '777777',
+    });
 
     const res = await request(app)
       .get('/api/otp/history')
-      .set('Authorization', `Bearer ${dev.accessToken}`);
+      .set('Authorization', `Bearer ${own.developer.token}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toHaveLength(0);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].code).toBe('111111');
   });
 });
 
@@ -562,14 +583,13 @@ describe('GET /api/otp/history — RECEIVER rol-duyarlı (kendi geçmişi)', () 
     expect(res.body.data[0].code).toBe('111111');
   });
 
-  it('süresi dolmuş VE sharingActive:false kayıtlar da görünür', async () => {
+  it('sharingActive:false kayıtlar da kendi geçmişinde görünür', async () => {
     const ctx = await getReceiverToken();
     await createTestOtpLog({
       projectId: ctx.project.id,
       receiverId: ctx.user.id,
       code: '333333',
       sharingActive: false,
-      expiresAt: new Date(Date.now() - 1000), // süresi geçmiş
     });
 
     const res = await request(app)
@@ -582,25 +602,18 @@ describe('GET /api/otp/history — RECEIVER rol-duyarlı (kendi geçmişi)', () 
     expect(res.body.data[0].sharingActive).toBe(false);
   });
 
-  it('zengin alanlar — serviceName + deviceName çözümlenir', async () => {
-    const ctx = await getReceiverToken();
-    const service = await createTestService({
-      projectId: ctx.project.id,
-      name: 'Binance',
-    });
+  it('zengin alanlar — receiver + device bilgisi döner', async () => {
+    const ctx = await getReceiverToken({ name: 'Bob', phoneNumber: '+905559998877' });
     const { device } = await createTestDevice({
       userId: ctx.user.id,
       projectId: ctx.project.id,
-    });
-    await prisma.device.update({
-      where: { id: device.id },
-      data: { deviceName: 'İş Telefonum' },
+      deviceName: 'İş Telefonum',
     });
     await createTestOtpLog({
       projectId: ctx.project.id,
       receiverId: ctx.user.id,
-      serviceId: service.id,
       deviceId: device.id,
+      senderRaw: 'BINANCE',
     });
 
     const res = await request(app)
@@ -608,11 +621,17 @@ describe('GET /api/otp/history — RECEIVER rol-duyarlı (kendi geçmişi)', () 
       .set('Authorization', `Bearer ${ctx.accessToken}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.data[0].serviceName).toBe('Binance');
-    expect(res.body.data[0].deviceName).toBe('İş Telefonum');
+    const item = res.body.data[0];
+    expect(item.senderRaw).toBe('BINANCE');
+    expect(item.receiver).toEqual({
+      name: 'Bob',
+      email: expect.any(String),
+      phoneNumber: '+905559998877',
+    });
+    expect(item.device).toEqual({ name: 'İş Telefonum' });
   });
 
-  it('çözülemeyen servis/cihaz → serviceName ve deviceName null', async () => {
+  it('cihaz bağlı değilse → device null (sahiplik yine de korunur)', async () => {
     const ctx = await getReceiverToken();
     await createTestOtpLog({
       projectId: ctx.project.id,
@@ -624,8 +643,8 @@ describe('GET /api/otp/history — RECEIVER rol-duyarlı (kendi geçmişi)', () 
       .set('Authorization', `Bearer ${ctx.accessToken}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.data[0].serviceName).toBeNull();
-    expect(res.body.data[0].deviceName).toBeNull();
+    expect(res.body.data[0].device).toBeNull();
+    expect(res.body.data[0].receiver.email).toEqual(expect.any(String));
   });
 });
 
@@ -666,8 +685,11 @@ describe('PATCH /api/otp/:id/sharing', () => {
   });
 
   it('sharingActive=false → history\'de görünmez', async () => {
-    const { projectId, receiver, developer } = await projectWithReceiverAndDeveloper();
-    const { otpLog } = await createTestOtpLog({ projectId, receiverId: receiver.id });
+    const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
+    const { otpLog } = await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+    });
 
     const before = await request(app)
       .get('/api/otp/history')
@@ -714,17 +736,14 @@ describe('GET /api/otp/:id/sharing', () => {
       projectId: ctx.project.id,
       role: Role.DEVELOPER,
     });
-    const service = await createTestService({ projectId: ctx.project.id });
     await createTestRoutingRule({
       receiverId: ctx.user.id,
-      serviceId: service.id,
       targetType: RoutingTarget.DEVELOPER,
       developerId: developer.id,
     });
     const { otpLog } = await createTestOtpLog({
       projectId: ctx.project.id,
       receiverId: ctx.user.id,
-      serviceId: service.id,
     });
 
     const res = await request(app)
@@ -749,5 +768,142 @@ describe('GET /api/otp/:id/sharing', () => {
       .set('Authorization', `Bearer ${intruder.accessToken}`);
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe('POST /api/otp/dismiss — developer kendi feed\'inden kaldırır', () => {
+  it('kaldırılan OTP developer feed\'inden düşer ama receiver\'da kalır (kalıcı silme değil)', async () => {
+    const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
+    const { otpLog: keep } = await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+      code: '111111',
+    });
+    const { otpLog: drop } = await createTestOtpLog({
+      projectId,
+      receiverId: receiver.id,
+      code: '222222',
+    });
+
+    const dismissRes = await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${developer.token}`)
+      .send({ otpIds: [drop.id] });
+
+    expect(dismissRes.status).toBe(200);
+    expect(dismissRes.body.data.dismissed).toBe(1);
+
+    // Developer feed'inde artık yalnızca kaldırılmayan kod var.
+    const devFeed = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${developer.token}`);
+    const devCodes = (devFeed.body.data as Array<{ code: string }>).map((d) => d.code);
+    expect(devCodes).toEqual(['111111']);
+
+    // Receiver kendi geçmişinde HER İKİSİNİ de görmeye devam eder (dismissal per-developer).
+    const rcvFeed = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${receiver.token}`);
+    const rcvCodes = (rcvFeed.body.data as Array<{ code: string }>).map((d) => d.code);
+    expect(rcvCodes.sort()).toEqual(['111111', '222222']);
+    // OTP tabloda duruyor (kalıcı silinmedi).
+    expect(await prisma.oTPLog.findUnique({ where: { id: keep.id } })).not.toBeNull();
+    expect(await prisma.oTPLog.findUnique({ where: { id: drop.id } })).not.toBeNull();
+  });
+
+  it('aynı OTP tekrar kaldırılırsa idempotent (dismissed:0)', async () => {
+    const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
+    const { otpLog } = await createTestOtpLog({ projectId, receiverId: receiver.id });
+
+    await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${developer.token}`)
+      .send({ otpIds: [otpLog.id] });
+
+    const again = await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${developer.token}`)
+      .send({ otpIds: [otpLog.id] });
+
+    expect(again.status).toBe(200);
+    expect(again.body.data.dismissed).toBe(0);
+  });
+
+  it('403 — RECEIVER dismiss edemez (yalnızca DEVELOPER)', async () => {
+    const ctx = await getReceiverToken();
+    const { otpLog } = await createTestOtpLog({
+      projectId: ctx.project.id,
+      receiverId: ctx.user.id,
+    });
+
+    const res = await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${ctx.accessToken}`)
+      .send({ otpIds: [otpLog.id] });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('400 — boş otpIds (VALIDATION_ERROR)', async () => {
+    const { developer } = await projectWithRoutedDeveloper();
+    const res = await request(app)
+      .post('/api/otp/dismiss')
+      .set('Authorization', `Bearer ${developer.token}`)
+      .send({ otpIds: [] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('GET /api/otp/history — ADMIN özeti (tüm receiver\'lar)', () => {
+  it('projedeki tüm receiver\'lardan gelen tüm OTP\'ler sıralanır', async () => {
+    const admin = await getAdminToken();
+    const { user: r1 } = await createTestUser({
+      projectId: admin.project.id,
+      role: Role.RECEIVER,
+    });
+    const { user: r2 } = await createTestUser({
+      projectId: admin.project.id,
+      role: Role.RECEIVER,
+    });
+    await createTestOtpLog({ projectId: admin.project.id, receiverId: r1.id, code: '111111' });
+    await createTestOtpLog({ projectId: admin.project.id, receiverId: r2.id, code: '222222' });
+    // Paylaşımı kapalı olan bile admin özetinde görünür (filtre yok).
+    await createTestOtpLog({
+      projectId: admin.project.id,
+      receiverId: r1.id,
+      code: '333333',
+      sharingActive: false,
+    });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${admin.accessToken}`);
+
+    expect(res.status).toBe(200);
+    const codes = (res.body.data as Array<{ code: string }>).map((d) => d.code);
+    expect(codes.sort()).toEqual(['111111', '222222', '333333']);
+    expect(res.body.pagination.total).toBe(3);
+  });
+
+  it('proje izolasyonu — admin başka projenin OTP\'lerini görmez', async () => {
+    const admin = await getAdminToken();
+    const { user: mine } = await createTestUser({
+      projectId: admin.project.id,
+      role: Role.RECEIVER,
+    });
+    await createTestOtpLog({ projectId: admin.project.id, receiverId: mine.id, code: '111111' });
+    // Başka projede bir OTP.
+    const other = await getReceiverToken();
+    await createTestOtpLog({ projectId: other.project.id, receiverId: other.user.id, code: '999999' });
+
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${admin.accessToken}`);
+
+    expect(res.status).toBe(200);
+    const codes = (res.body.data as Array<{ code: string }>).map((d) => d.code);
+    expect(codes).toEqual(['111111']);
   });
 });

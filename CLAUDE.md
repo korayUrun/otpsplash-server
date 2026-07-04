@@ -16,18 +16,24 @@ Kıdemli backend mühendisi. Stripe/Google kalitesinde kod yaz.
 admin tarafından tanımlanmış kurallara göre dağıtan bir orkestrasyon platformudur.
 
 ```
-SMS gelir (Android: otomatik | iOS: Shortcuts) → CİHAZDA parse edilir (code + senderRaw + serviceHint?)
-  → POST /api/otp (X-Device-Secret header ile) { code, source, senderRaw, serviceHint? }
-    → Device doğrula → senderRaw/serviceHint ile servis çözümle
+SMS gelir (Android: otomatik | iOS: Shortcuts) → CİHAZDA parse edilir (code + senderRaw)
+  → POST /api/otp (X-Device-Secret header ile) { code, source, senderRaw }
+    → Device doğrula
       → AES-256-GCM şifrele → DB kaydet (receiverId doğrudan yazılır, deviceId'ye bağımlı değil)
-        → RoutingRule'a göre hedef belirle (developer veya grup)
+        → RoutingRule'a göre hedef belirle (receiver → developer veya grup)
           → Socket.IO emit → ilgili developer(lar)ın ekranı
 ```
 
+**Servis kavramı yoktur (kaldırıldı):** Dağıtım hedefi artık gönderilen SMS'in hangi servise
+(Binance, Garanti vb.) ait olduğuna değil, YALNIZCA kodu üreten receiver'a bağlıdır. `senderRaw`
+sadece developer'a "kim gönderdi" etiketi olarak gösterilir; backend bunu bir servise çözmez,
+bir kurala bağlamaz. Bir receiver'ın tüm kodları, o receiver'a atanmış developer(lar)a gider.
+
 **Parse yeri kararı:** OTP kodu cihazda parse edilir, backend'e asla ham SMS metni (`smsText`)
-gönderilmez. Bu hem mobil tarafta zaten var olan regex mantığını tekrar kullanır hem de
-"SMS gövdesi asla cihazdan çıkmaz" güvenlik prensibini gerçek anlamda korur — eğer backend
-parse etseydi, ham metnin backend'e gitmesi şart olurdu ve bu prensip kağıt üzerinde kalırdı.
+gönderilmez. Sadece parse edilen `code` ve gönderici etiketi `senderRaw` gönderilir. Bu hem mobil
+tarafta zaten var olan regex mantığını tekrar kullanır hem de "SMS gövdesi asla cihazdan çıkmaz"
+güvenlik prensibini gerçek anlamda korur — eğer backend parse etseydi, ham metnin backend'e gitmesi
+şart olurdu ve bu prensip kağıt üzerinde kalırdı.
 
 **Kullanıcı rolleri:** RECEIVER (OTP üretir) | DEVELOPER (OTP alır) | ADMIN (kuralları yönetir)
 Üç rol de ayrı mobil arayüze sahiptir — bir kullanıcı aynı anda iki rolü birden taşımaz.
@@ -39,8 +45,8 @@ Katman 1 — SMS yakalama (cihazda otomatik)
   Receiver hiçbir şey seçmez, SMS geldiği an cihaz backend'e gönderir.
 
 Katman 2 — Dağıtım (backend'de, admin kuralına göre otomatik)
-  Hangi developer'ın hangi receiver'ın hangi servisten gelen kodunu göreceğini
-  admin önceden tanımlar (RoutingRule). Receiver paylaşımı elle seçmez, sadece
+  Hangi developer'ın hangi receiver'ın kodlarını göreceğini admin önceden tanımlar
+  (RoutingRule: receiver → developer/grup). Receiver paylaşımı elle seçmez, sadece
   admin'in kurduğu kuralı salt-okunur görür ve dilerse o OTP özelinde paylaşımı durdurabilir.
 ```
 
@@ -63,7 +69,7 @@ Katman 2 — Dağıtım (backend'de, admin kuralına göre otomatik)
 | Şifreleme | Node.js crypto | AES-256-GCM, native |
 | Logging | pino | JSON structured, redact zorunlu |
 | Rate limiting | express-rate-limit | In-memory yeterli |
-| Cron | node-cron | TTL cleanup |
+| Cron | — | (OTP süresiz — cleanup job kaldırıldı) |
 | Test | Jest + Supertest | Unit + integration |
 | Güvenlik | helmet + cors | — |
 
@@ -73,9 +79,9 @@ Katman 2 — Dağıtım (backend'de, admin kuralına göre otomatik)
 
 ### SOLID
 - **SRP:** Controller sadece HTTP katmanı. İş mantığı service'te, DB işlemi repository'de.
-- **OCP:** Yeni OTP kaynağı (kayıt tipi) veya yeni servis tespiti kuralı eklemek = yeni veri/class, mevcut koda dokunma.
+- **OCP:** Yeni OTP kaynağı (kayıt tipi) eklemek = yeni veri/enum, mevcut koda dokunma.
 - **LSP:** Tüm interface implementasyonları birbirinin yerine geçebilmeli.
-- **ISP:** `IOtpParser`, `IOtpEncryptor`, `IOtpRepository`, `IOtpNotifier`, `IRoutingResolver`, `IServiceResolver` — tek büyük interface yok.
+- **ISP:** `IOtpEncryptor`, `IOtpRepository`, `IOtpNotifier`, `IRoutingResolver`, `IRoutingRepository` — tek büyük interface yok.
 - **DIP:** Service'ler concrete class'a değil interface'e bağımlı. Constructor injection zorunlu.
 
 ### Temiz Kod
@@ -87,26 +93,22 @@ Katman 2 — Dağıtım (backend'de, admin kuralına göre otomatik)
 ### Asenkron / Senkron Kuralları
 ```
 SYNC olmalı:
-  ✓ OTP regex parse              (CPU, I/O yok)
   ✓ AES-256-GCM encrypt/decrypt  (crypto sync API)
   ✓ JWT sign/verify              (hızlı, QA iç aracı için yeterli)
   ✓ Device Secret üretimi        (crypto.randomBytes, sync)
-  ✓ senderRaw/serviceHint eşleştirme (string/regex karşılaştırma, CPU bound — DB'den
-    çekilen kuralları bellekte regex ile eşleştirmek I/O değil)
+  ✓ Routing hedeflerini flatten + dedupe (bellekte, DB'den çekilen kurallar üzerinde — I/O değil)
   ✓ Config/env okuma             (startup)
 
 ASYNC olmalı:
   ✓ Her Prisma işlemi            (I/O)
   ✓ argon2 hash/verify           (CPU-intensive, event loop'u bloklar)
   ✓ Socket.IO emit               (I/O)
-  ✓ ServiceRegistry kurallarını DB'den çekme (I/O — sonra senkron eşleştirme yapılır)
+  ✓ Routing kurallarını DB'den çekme (I/O — sonra senkron flatten yapılır)
 
 YASAK:
   ❌ argon2.hashSync() / bcrypt.hashSync()
   ❌ crypto.pbkdf2Sync()
   ❌ fs.readFileSync() (startup dışında)
-  ❌ Her OTP isteğinde ServiceRegistry kurallarını tekrar tekrar sorgulamak —
-     kurallar nadiren değişir, kısa süreli in-memory cache uygundur (bkz. FAZ 8)
 ```
 
 ### Hata Mimarisi
@@ -126,6 +128,20 @@ YASAK:
 Şu an in-memory — 5-10 kullanıcı için yeterli. Yatay büyüme gerekirse:
 `io.adapter(createAdapter(pubClient, subClient))` — 1 satır, geri kalan kod değişmez.
 
+### Socket Handshake Auth — Makine-Okunur Red Kodu
+Handshake auth reddi (`authenticateSocket`) client'a hata METNİNİN yanı sıra makine-okunur bir
+`data.code` (`ErrorCode`) taşır — Socket.IO `next(err)`'deki `err.data`'yı `connect_error`
+event'ine iletir. Client "sessiz refresh mi / login'e mi" kararını kırılgan string eşleştirmesi
+(`/expired|token|jwt/i`) yerine bu koda göre verir:
+```
+TOKEN_EXPIRED              → client access token'ı sessizce yeniler (refresh)
+TOKEN_INVALID / diğerleri  → client doğrudan login'e yönlendirir
+```
+Red edilen hata sunucu tarafında yine `AuthenticationError` örneğidir (errorCode korunur,
+`token.service` TOKEN_EXPIRED/TOKEN_INVALID ayrımını yapar); üstüne yalnızca client'ın okuduğu
+`data: { code }` eklenir (bkz. `SocketAuthErrorData`). Access token'lar stateless olduğundan
+backend `TOKEN_REVOKED` ÜRETMEZ — iptal sayılacak her durum TOKEN_INVALID altında toplanır.
+
 ### Device Auth Mimari Kararı (FAZ 6)
 JWT bir **kullanıcı oturumunu** temsil eder ve kısa ömürlüdür (15dk). Android BroadcastReceiver
 ve iOS Shortcut ise **kullanıcı oturumu olmayan, arka planda aylarca sessizce çalışan otomasyonlardır.**
@@ -142,42 +158,37 @@ Device Secret → "Ben Y'nin şu cihazıyım"          → BroadcastReceiver ve 
 Bu ayrım hem iOS hem Android için geçerlidir — ikisi de "sürekli arka planda çalışan otomasyon"
 kategorisine girer, ikisi de aynı `deviceAuth` middleware'ini kullanır.
 
-### Dağıtım Mimari Kararı (FAZ 7)
+### Dağıtım Mimari Kararı (FAZ 7 — servissiz sadeleştirilmiş hali)
 Receiver paylaşımı elle yapmaz. Hedef kitle admin tarafından `RoutingRule` ile önceden
-tanımlanır. Bir kural şu üçlüye bağlıdır: hangi receiver, hangi servisten gelen kod,
-kime gidecek. "Kime gidecek" kısmı esnek tutulur — başlangıçta tek tek developer
-seçmek yeterlidir, admin isterse sonradan developer'ları bir grup altında toplayıp
-kuralı gruba bağlayabilir. Grup zorunlu bir kavram değil, bir kısayoldur.
+tanımlanır. Bir kural **ikiliye** bağlıdır: hangi receiver, kime gidecek. Servis kavramı
+YOKTUR — bir receiver'ın ürettiği tüm kodlar aynı hedefe akar (`senderRaw` yalnızca
+developer'a gösterilen bir etikettir, dağıtımı etkilemez). "Kime gidecek" kısmı esnek tutulur —
+başlangıçta tek tek developer seçmek yeterlidir, admin isterse sonradan developer'ları bir grup
+altında toplayıp kuralı gruba bağlayabilir. Grup zorunlu bir kavram değil, bir kısayoldur.
 
 ```
-RoutingRule.targetType = 'DEVELOPER' → targetId bir User.id'ye işaret eder
-RoutingRule.targetType = 'GROUP'     → targetId bir Group.id'ye işaret eder
+RoutingRule.targetType = 'DEVELOPER' → developerId bir User.id'ye işaret eder
+RoutingRule.targetType = 'GROUP'     → groupId bir Group.id'ye işaret eder
                                         (grup içindeki tüm developer'lara gider)
 ```
+
+`resolveTargets(receiverId)` o receiver'ın aktif kurallarını çözer (doğrudan developer +
+grup üyeleri, `Set` ile dedupe); OTP yalnızca bu hedeflere emit edilir. Kural yoksa kimseye
+gitmez. Developer geçmişi (`GET /api/otp/history`) de aynı çözümün tersine göre süzülür:
+developer yalnızca kendisine (doğrudan veya grup üyeliğiyle) atanan receiver'ların kodlarını
+görür — canlı emit ile hizalı.
 
 Receiver OTP detayında bu kuralın sonucunu salt-okunur görür ("şu an kimlerle
 paylaşıyorum") ve o OTP'ye özel `sharingActive` toggle'ı ile görünürlüğü durdurabilir.
 Durdurma geçmişe etkimez — developer zaten görmüşse geri alınmaz, sadece bundan
 sonraki canlı görünürlük ve liste varlığı kesilir.
 
-### Servis Tespiti Mimari Kararı (FAZ 8)
-Hangi SMS'in hangi şirkete (Binance, Garanti vb.) ait olduğunu **cihaz değil backend
-karar verir.** Cihaz pipeline'ı kasıtlı olarak "aptal" bırakılır: SMS'in tam gövdesini
-hiçbir zaman backend'e göndermez, sadece iki küçük sinyal gönderir — `senderRaw`
-(ham gönderici kimliği, Android'de güvenilir, iOS'ta yedek) ve opsiyonel `serviceHint`
-(mesaj içinde yakalanan anahtar kelime, iOS'ta gönderici temiz gelmediğinde devreye girer).
-
-Bu ayrım iki kazanç sağlar: SMS gövdesi hiçbir zaman cihazdan çıkmadığı için güvenlik
-artar, ve yeni bir şirket eklemek mobil uygulamayı güncellemeyi gerektirmez — admin
-panelden bir `ServiceRegistry` kuralı eklemesi yeterlidir.
-
-Eşleşmeyen sinyaller ayrı bir "kova" tablosunda tutulmaz. `ServiceRegistry`'nin
-`isActive: false, name: null` olan satırları zaten bu işlevi görür — backend tanımadığı
-bir `senderRaw` gördüğünde inaktif bir kayıt upsert eder (varsa sayaç/son görülme
-zamanını günceller, yoksa oluşturur). Admin panelde bu inaktif satırları görür, isim
-ve eşleşme kuralı ekleyip aktif hale getirir. Geçmişe dönük kurtarma yapılmaz — o ana
-kadar kovaya düşmüş OTP'ler zaten süresi dolmuş olur, kural eklendiği andan itibaren
-gelecek SMS'ler otomatik doğru yere akar.
+> **Not — FAZ 8 (Servis Tespiti) kaldırıldı.** Eskiden `RoutingRule` bir `serviceId`'ye de
+> bağlıydı ve gelen `senderRaw`/`serviceHint` sinyalleri `ServiceRegistry` üzerinden bir servise
+> (Binance, Garanti vb.) çözülüyordu; eşleşmeyenler bir "kova"da birikiyordu. Bu katman tamamen
+> kaldırıldı — `ServiceRegistry` modeli/tablosu, `serviceHint`, kova mantığı ve
+> `/api/service-registry*` uçları gitti. Dağıtım artık yalnızca receiver bazlıdır (bkz. yukarı).
+> `senderRaw` DB'de kalır ama sadece developer'a "kimden geldi" etiketi olarak gösterilir.
 
 ### OTP Sahiplik Kararı — receiverId Doğrudan Yazılır
 `OTPLog.deviceId` nullable'dır (`onDelete: SetNull`) — cihaz silinirse bu alan null'a düşer.
@@ -189,37 +200,23 @@ zaten elde olan `req.device.userId`'den yazılır — ekstra bir sorgu gerektirm
 izleme/analiz amacıyla ayrıca tutulur ama sahiplik kontrolü artık ona bağımlı değildir.
 
 **Kabul edilen kademeli bozulma (graceful degradation):** `receiverId` sayesinde sahiplik
-(sharing toggle yetkisi) her zaman korunur — ama `Device.phoneNumber`/`deviceName` bilgisi
-`deviceId` üzerinden geliyor. Cihaz silinirse (`deviceId` null'a düşerse) bu iki alan da
-kaybolur; developer'ın "cihaz bilgisi" görünümünde sadece `receiver` (kullanıcı adı/email)
-kalır, telefon numarası ve cihaz adı boş görünür. Bu bilinçli kabul edilen bir davranıştır —
-sahiplik (kritik) her koşulda korunurken, görüntüleme bilgisi (kozmetik) cihazla birlikte
-kaybolabilir. Mobil tarafta bu durum zaten "Belirtilmemiş" yazısıyla ele alınıyor (bkz. mobil
-CLAUDE.md, Developer OtpDetailScreen).
+(sharing toggle yetkisi) her zaman korunur — ama cihaz adı bilgisi `deviceId` üzerinden geliyor.
+Cihaz silinirse (`deviceId` null'a düşerse) payload'daki `device` alanı `null` olur; developer'ın
+gördüğü satırda `receiver` (ad/email/telefon) kalır ama cihaz adı kaybolur. Bu bilinçli kabul
+edilen bir davranıştır — sahiplik (kritik) her koşulda korunurken, görüntüleme bilgisi (kozmetik)
+cihazla birlikte kaybolabilir. Mobil tarafta bu durum zaten "Belirtilmemiş" yazısıyla ele alınıyor
+(bkz. mobil CLAUDE.md, Developer OtpDetailScreen).
 
 ### RoutingRule Unique Constraint — Partial Index Zorunluluğu
 PostgreSQL'de unique constraint'lerde NULL değerler "birbirinden farklı" sayılır. Eğer
-`@@unique([receiverId, serviceId, targetType, developerId, groupId])` düz bir constraint olarak
+`@@unique([receiverId, targetType, developerId, groupId])` düz bir constraint olarak
 tanımlanırsa, `targetType=DEVELOPER` olan kayıtlarda `groupId` hep NULL olacağından aynı
-`(receiver, servis, developer)` üçlüsü teknik olarak birden fazla kez eklenebilir — DB bunu
-yakalamaz. Bu yüzden **iki ayrı partial unique index** kullanılır (bkz. şema), ve servis
-katmanında da `createRule` öncesi açık bir "zaten var mı" kontrolü yapılır — sadece DB
-constraint'ine güvenilmez, çift katmanlı korunur.
-
-### ServiceRegistry Proje İzolasyonu — Bilinçli Karar
-`ServiceRegistry` proje bazlıdır (`@@index([projectId])`) — aynı "Binance" deseni her proje için
-ayrı ayrı tanımlanmak zorundadır, global/paylaşımlı bir servis tanımı yoktur. Bu, çok projeli
-kurulumlarda admin'in aynı kuralı tekrar tekrar girmesi anlamına gelir. **Bu bilinçli bir
-kapsam dışı bırakma kararıdır** — "global servis + proje override" modeli gelecekte eklenebilir
-ama şu an gereksiz karmaşıklık. Projeler arası veri sızıntısını da bu izolasyon engeller.
-
-### senderPattern — ReDoS Koruması
-Admin panelden girilen `senderPattern` ve `keywordPattern` doğrudan `regex.test()`'e gider ve
-bu **senkron**, her gelen OTP isteğinde çalışır. Kötü yazılmış bir regex (catastrophic
-backtracking) event loop'u bloklayabilir. QA iç aracı ölçeğinde risk düşük ama önlem ucuz:
-pattern uzunluğu en fazla 200 karakter (Zod schema'da kontrol edilir), kayıt sırasında tehlikeli
-quantifier kombinasyonlarını reddet (iç içe `(...)+`, `(...)*` gibi kalıpları reddeden basit bir
-custom Zod refine `registry.schemas.ts`'de yer alır).
+`(receiver, developer)` ikilisi teknik olarak birden fazla kez eklenebilir — DB bunu
+yakalamaz. Bu yüzden **iki ayrı partial unique index** kullanılır (bkz. şema):
+`(receiverId, developerId) WHERE targetType='DEVELOPER'` ve
+`(receiverId, groupId) WHERE targetType='GROUP'`. Ayrıca servis katmanında da `createRule`
+öncesi açık bir "zaten var mı" kontrolü yapılır — sadece DB constraint'ine güvenilmez,
+çift katmanlı korunur.
 
 ### Sharing Durdurma — Developer Ekranına Anlık Bildirim
 Receiver `sharingActive: false` yaptığında, sadece `GET /api/otp/history`'den o OTP düşmekle
@@ -243,6 +240,44 @@ action'ı idempotent olmalıdır (zaten kaldırılmış veya hiç var olmayan bi
 no-op olmalı, hata fırlatmamalı). Bu, ileride oda stratejisi değişirse veya ağ katmanında
 event tekrarı olursa savunma sağlar — tek katmanlı korumaya güvenilmez.
 
+### Self-Register Mimari Kararı (Fiziksel Cihaz Testi Sonrası)
+`POST /api/auth/register` kullanıcıdan `projectId` ALMAZ. Bir kullanıcı proje seçmek/id
+girmek zorunda kalmamalı (küçük iç QA aracında kötü UX), ama `User.projectId` non-null bir
+FK'dir ve tüm izolasyon buna dayanır — yani "proje yok" bir seçenek değil. Çözüm: backend
+yeni kullanıcıyı **`Project.isDefault: true` olan tek varsayılan projeye** bağlar. Aynı anda
+en fazla bir varsayılan proje olması migration'daki partial unique index (`projects_isDefault_key`)
+ile DB seviyesinde garanti edilir; seed demo projeyi varsayılan işaretler. Rol yalnızca
+RECEIVER/DEVELOPER olabilir — **ADMIN self-register edemez** (Zod refine + service guard, çift
+katman). Varsayılan proje tanımlı değilse kayıt 404 PROJECT_NOT_FOUND döner (kurulum hatası).
+
+### OTP Süresiz — Otomatik Silme Yok, Developer Kendi Kaldırır
+OTP kodlarının **geçerlilik süresi yoktur** (`OTPLog.expiresAt` sütunu kaldırıldı) ve **süre
+dolunca otomatik silme yoktur** (node-cron cleanup job kaldırıldı). Kodlar geldikleri sırayla
+(en yeni önce) feed'de birikir; developer'a satırda `createdAt` (ne zaman/saat kaçta geldiği)
+gösterilir. `TTL_SECONDS` sabiti ve `OTP_TTL_DAYS` env'i kod tabanında yoktur.
+
+Bir developer feed'i temizlemek istediğinde ilgili OTP'leri seçip `POST /api/otp/dismiss` ile
+kaldırır. Bu **per-developer yumuşak gizlemedir** (`OtpDismissal` tablosu), kalıcı silme değildir:
+OTP tabloda kalır — receiver kendi geçmişinde, admin özet ekranında görmeye devam eder; aynı OTP
+grup üzerinden başka developer'lara gittiyse onları etkilemez. `findForDeveloper` sorgusu bu
+developer için dismissal bulunan kayıtları hariç tutar (`dismissals: { none: { userId } }`).
+
+### Receiver Rol Kapsamı — Kendi OTP'sini Canlı Görür
+Receiver uygulaması kendi cihazının ürettiği kodları bir geçmiş listesinde gösterir ve bu liste
+**canlı güncellenir**: receiver kendi `user:${receiverId}` odasına katılır (`handleConnection`),
+ve her yeni OTP işlendiğinde `notifyReceiver` ile bu odaya `otp:received` yayınlanır — receiver
+kodu refresh'siz, geldiği anda listenin en üstünde görür.
+
+Bu emit **routing'den bağımsızdır**: hiç kural olmasa bile receiver kendi
+kodunu görür (`findByReceiver` filtresiz olduğundan geçmişle tutarlı). `deliveredTo` sayımına
+DAHİL DEĞİLDİR — o yalnızca routing hedefi developer sayısıdır. Developer hedefleme (`notify`)
+ve sahibi receiver hedefleme (`notifyReceiver`) ayrık odalara gider; bir kullanıcı tek rol
+taşıdığından çift emit riski yoktur (FAZ 7 developer davranışı korunur). ADMIN hiçbir odaya
+katılmaz (OTP feed'i yoktur).
+
+`otp:revoked` hâlâ yalnızca developer'lara gider (paylaşımı durduran zaten receiver'ın kendisidir,
+kendi UI'ı optimistic günceller) — receiver odasına revoked yayınlanmaz.
+
 ---
 
 ## Klasör Yapısı
@@ -259,19 +294,18 @@ src/
 │   ├── AppError.ts           → Abstract base
 │   ├── errors.ts             → ValidationError, AuthenticationError, AuthorizationError,
 │   │                           NotFoundError, ConflictError,
-│   │                           OtpParseError (FAZ 8 sonrası ulaşılamaz — parse cihaza taşındı,
-│   │                           backend artık bu hatayı hiç fırlatmaz, bkz. otp.parser.ts notu),
+│   │                           OtpParseError (parse cihaza taşındı — backend artık bu hatayı hiç
+│   │                           fırlatmaz, bkz. otp.parser.ts notu),
 │   │                           OtpEncryptionError, DeviceAuthError, RoutingError, InternalError
 │   └── ErrorCode.ts          → Enum (VALIDATION_ERROR, AUTHENTICATION_FAILED,
 │                               TOKEN_EXPIRED, TOKEN_INVALID, FORBIDDEN, NOT_FOUND,
 │                               CONFLICT, USER_NOT_FOUND, PROJECT_NOT_FOUND,
-│                               OTP_NOT_FOUND (FAZ 8 sonrası ulaşılamaz — bkz. OtpParseError notu),
+│                               OTP_NOT_FOUND (parse cihazda — backend fırlatmaz),
 │                               OTP_DELIVERY_FAILED,
 │                               OTP_ENCRYPTION_FAILED, INTERNAL_ERROR,
 │                               DATABASE_ERROR, RATE_LIMIT_EXCEEDED,
 │                               DEVICE_NOT_FOUND, DEVICE_REVOKED, DEVICE_SECRET_INVALID,
-│                               GROUP_NOT_FOUND, ROUTING_RULE_NOT_FOUND, ROUTING_RULE_CONFLICT,
-│                               SERVICE_NOT_FOUND, SERVICE_INACTIVE)
+│                               GROUP_NOT_FOUND, ROUTING_RULE_NOT_FOUND, ROUTING_RULE_CONFLICT)
 ├── types/
 │   ├── Result.ts             → Result<T>, ok(), fail()
 │   ├── express.d.ts          → Request augmentation: id, user, device
@@ -309,14 +343,14 @@ src/
 │   ├── otp/
 │   │   ├── otp.interfaces.ts     → IOtpParser, IOtpEncryptor, IOtpRepository,
 │   │   │                           IOtpNotifier, IOtpService, DTO'lar
-│   │   ├── otp.parser.ts         → (FAZ 3'te yazıldı, FAZ 8'de KULLANIM DIŞI BIRAKILDI —
-│   │   │                            parse artık cihazda yapılıyor, bkz. FAZ 8 değişiklik notları)
+│   │   ├── otp.parser.ts         → (FAZ 3'te yazıldı, sonradan KULLANIM DIŞI BIRAKILDI —
+│   │   │                            parse artık cihazda yapılıyor)
 │   │   ├── otp.encryptor.ts      → AES-256-GCM encrypt/decrypt — SYNC
-│   │   ├── otp.repository.ts     → Prisma CRUD — ASYNC
-│   │   ├── otp.service.ts        → processAndDeliver (artık servis çözümleme + routing dahil), getHistory
-│   │   ├── otp.controller.ts     → HTTP katmanı
-│   │   ├── otp.routes.ts         → Route tanımları
-│   │   └── otp.schemas.ts        → Zod şemaları (senderRaw, serviceHint eklendi)
+│   │   ├── otp.repository.ts     → Prisma CRUD — ASYNC (findForDeveloper/findAllForProject/findByReceiver, dismissForDeveloper)
+│   │   ├── otp.service.ts        → processAndDeliver, getHistory (developer), getAllForProject (admin), dismissForDeveloper
+│   │   ├── otp.controller.ts     → HTTP katmanı (history rol'e göre dallanır: DEVELOPER/RECEIVER/ADMIN)
+│   │   ├── otp.routes.ts         → Route tanımları (+ POST /dismiss)
+│   │   └── otp.schemas.ts        → Zod şemaları (code + source + senderRaw; dismissOtpsSchema)
 │   ├── project/
 │   │   ├── project.interfaces.ts → IProjectService, IProjectRepository, DTO'lar
 │   │   ├── project.repository.ts → Prisma CRUD — ASYNC
@@ -331,29 +365,19 @@ src/
 │   │   ├── group.controller.ts   → HTTP katmanı
 │   │   ├── group.routes.ts       → Route tanımları
 │   │   └── group.schemas.ts      → Zod şemaları
-│   ├── routing/
-│   │   ├── routing.interfaces.ts → IRoutingService, IRoutingRepository, IRoutingResolver, DTO'lar
-│   │   ├── routing.repository.ts → Prisma CRUD — ASYNC
-│   │   ├── routing.resolver.ts   → resolveTargets(receiverId, serviceId): User[] — ASYNC (DB) sonra SYNC (flatten)
-│   │   ├── routing.service.ts    → createRule, toggleRule, deleteRule, listForReceiver
-│   │   ├── routing.controller.ts → HTTP katmanı
-│   │   ├── routing.routes.ts     → Route tanımları
-│   │   └── routing.schemas.ts    → Zod şemaları
-│   └── service-registry/
-│       ├── registry.interfaces.ts → IServiceRegistryService, IServiceRegistryRepository,
-│       │                            IServiceResolver, DTO'lar
-│       ├── registry.repository.ts → Prisma CRUD — ASYNC
-│       ├── registry.resolver.ts   → resolve(senderRaw, serviceHint): serviceId|null — SYNC eşleştirme,
-│       │                            kurallar kısa TTL'li in-memory cache'ten okunur
-│       ├── registry.service.ts    → createRule, activateFromUnmatched (kova satırını aktive et),
-│       │                            recordUnmatched (upsert inaktif satır), listAll, listUnmatched
-│       ├── registry.controller.ts → HTTP katmanı
-│       ├── registry.routes.ts     → Route tanımları
-│       └── registry.schemas.ts    → Zod şemaları
-├── jobs/
-│   └── cleanup.job.ts        → node-cron, her gün UTC 02:00, hata uygulamayı durdurmamalı
+│   └── routing/
+│       ├── routing.interfaces.ts → IRoutingService, IRoutingRepository, IRoutingResolver, DTO'lar
+│       ├── routing.repository.ts → Prisma CRUD — ASYNC
+│       ├── routing.resolver.ts   → resolveTargets(receiverId): string[] — ASYNC (DB) sonra SYNC (flatten);
+│       │                            resolveVisibleReceiverIds(developerId): string[] (history süzme)
+│       ├── routing.service.ts    → createRule, toggleRule, deleteRule, listForReceiver
+│       ├── routing.controller.ts → HTTP katmanı
+│       ├── routing.routes.ts     → Route tanımları
+│       └── routing.schemas.ts    → Zod şemaları
 └── routes/
     └── index.ts              → Tüm modül route'larını birleştir
+
+(jobs/ kaldırıldı — OTP süresiz olduğundan cleanup cron yok.)
 ```
 
 ---
@@ -365,6 +389,7 @@ model User {
   id            String         @id @default(uuid()) @db.Uuid
   email         String         @unique @db.VarChar(255)
   name          String?        @db.VarChar(100)   // görünen ad; opsiyonel — admin panelinde email yerine gösterilir, mobil name ?? email fallback yapar
+  phoneNumber   String?        @db.VarChar(32)    // hesap iletişim numarası; self-register'da beyan edilir, opsiyonel
   password      String         @db.VarChar(512)
   role          Role
   projectId     String         @db.Uuid
@@ -373,6 +398,7 @@ model User {
   groupMembers  GroupMember[]
   routingRules  RoutingRule[]  @relation("ReceiverRules")
   receivedOtps  OTPLog[]       @relation("ReceiverOtps")  // sahiplik kanıtı — deviceId'den bağımsız
+  dismissals    OtpDismissal[] @relation("DeveloperDismissals")  // developer'ın feed'inden kaldırdığı OTP'ler
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   @@index([email])
@@ -384,11 +410,11 @@ model Project {
   id        String          @id @default(uuid()) @db.Uuid
   name      String          @db.VarChar(100)
   apiKey    String          @unique @default(uuid()) @db.Uuid
+  isDefault Boolean         @default(false)   // self-register bu projeye bağlanır; en fazla BİR tane (migration'da partial unique index: projects_isDefault_key)
   users     User[]
   otpLogs   OTPLog[]
   devices   Device[]
   groups    Group[]
-  services  ServiceRegistry[]
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
   @@map("projects")
@@ -439,85 +465,71 @@ model GroupMember {
   @@map("group_members")
 }
 
-// Servis Kayıt Defteri — hem aktif kuralları hem "henüz adlandırılmamış" (kova) satırları tutar
-model ServiceRegistry {
-  id              String   @id @default(uuid()) @db.Uuid
-  name            String?  @db.VarChar(100)   // null = henüz adlandırılmadı (kova durumu)
-  isActive        Boolean  @default(false)    // false = kova, true = kural olarak çalışıyor
-  senderPattern   String?  @db.VarChar(255)   // senderRaw eşleştirme deseni (regex veya exact)
-  keywordPattern  String?  @db.VarChar(255)   // serviceHint eşleştirme deseni (yedek sinyal)
-  iconUrl         String?  @db.VarChar(500)
-  projectId       String   @db.Uuid
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  lastSeenSender  String?  @db.VarChar(255)   // kova durumundayken en son görülen ham gönderici
-  unmatchedCount  Int      @default(0)        // kova durumundayken kaç kez görüldü
-  lastSeenAt      DateTime?
-  routingRules    RoutingRule[]
-  otpLogs         OTPLog[]
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  @@index([projectId])
-  @@index([isActive])
-  @@map("service_registry")
-}
-
-// Hangi receiver'ın hangi servisten gelen kodu kime (developer veya grup) gidecek
+// Hangi receiver'ın kodu kime (developer veya grup) gidecek. Servis kavramı yoktur.
 model RoutingRule {
-  id          String          @id @default(uuid()) @db.Uuid
-  receiverId  String          @db.Uuid
-  receiver    User            @relation("ReceiverRules", fields: [receiverId], references: [id], onDelete: Cascade)
-  serviceId   String          @db.Uuid
-  service     ServiceRegistry @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  targetType  RoutingTarget   // DEVELOPER | GROUP
-  developerId String?         @db.Uuid        // targetType=DEVELOPER ise dolu
-  groupId     String?         @db.Uuid        // targetType=GROUP ise dolu
-  group       Group?          @relation("GroupRules", fields: [groupId], references: [id], onDelete: Cascade)
-  isActive    Boolean         @default(true)
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  id          String        @id @default(uuid()) @db.Uuid
+  receiverId  String        @db.Uuid
+  receiver    User          @relation("ReceiverRules", fields: [receiverId], references: [id], onDelete: Cascade)
+  targetType  RoutingTarget // DEVELOPER | GROUP
+  developerId String?       @db.Uuid        // targetType=DEVELOPER ise dolu
+  groupId     String?       @db.Uuid        // targetType=GROUP ise dolu
+  group       Group?        @relation("GroupRules", fields: [groupId], references: [id], onDelete: Cascade)
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
   @@index([receiverId])
-  @@index([serviceId])
   @@map("routing_rules")
 }
 
 // NOT: PostgreSQL'de düz @@unique([...]) NULL'ları "farklı" sayar — targetType=DEVELOPER
-// kayıtlarında groupId hep NULL olduğundan aynı (receiver, servis, developer) tekrar
-// eklenebilirdi. Bu yüzden migration'da @@unique yerine İKİ AYRI partial unique index
-// raw SQL ile eklenir (Prisma migration dosyasına elle eklenir, schema.prisma'da ifade
-// edilemez):
+// kayıtlarında groupId hep NULL olduğundan aynı (receiver, developer) tekrar eklenebilirdi.
+// Bu yüzden migration'da @@unique yerine İKİ AYRI partial unique index raw SQL ile eklenir
+// (Prisma migration dosyasına elle eklenir, schema.prisma'da ifade edilemez):
 //
 //   CREATE UNIQUE INDEX routing_rule_developer_unique
-//     ON routing_rules (receiver_id, service_id, developer_id)
+//     ON routing_rules (receiver_id, developer_id)
 //     WHERE target_type = 'DEVELOPER';
 //
 //   CREATE UNIQUE INDEX routing_rule_group_unique
-//     ON routing_rules (receiver_id, service_id, group_id)
+//     ON routing_rules (receiver_id, group_id)
 //     WHERE target_type = 'GROUP';
 //
 // Bu DB seviyesi koruma, routing.service.ts'teki createRule'da yapılan açık "zaten var mı"
 // kontrolünün YERİNE değil, ONUN YANINDA çalışır — çift katmanlı korunur.
 
+// OTP kodları SÜRESİZDİR — expiresAt yoktur, otomatik silme (cron) yoktur.
 model OTPLog {
-  id            String           @id @default(uuid()) @db.Uuid
-  encryptedCode String           @db.VarChar(512)  // iv:authTag:ciphertext (base64)
+  id            String         @id @default(uuid()) @db.Uuid
+  encryptedCode String         @db.VarChar(512)  // iv:authTag:ciphertext (base64)
   source        Source
-  projectId     String           @db.Uuid
-  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  deviceId      String?          @db.Uuid          // izleme/analiz amaçlı — onDelete: SetNull
-  device        Device?          @relation(fields: [deviceId], references: [id], onDelete: SetNull)
-  receiverId    String           @db.Uuid          // SAHİPLİK KAYNAĞI — deviceId silinse bile kalıcı,
-  receiver      User             @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
-  serviceId     String?          @db.Uuid          // çözümlenen servis — null ise hiç çözülemedi
-  service       ServiceRegistry? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  sharingActive Boolean          @default(true)    // receiver bu OTP'nin paylaşımını durdurabilir
-  createdAt     DateTime         @default(now())
-  expiresAt     DateTime
+  projectId     String         @db.Uuid
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deviceId      String?        @db.Uuid          // izleme/analiz amaçlı — onDelete: SetNull
+  device        Device?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  receiverId    String         @db.Uuid          // SAHİPLİK KAYNAĞI — deviceId silinse bile kalıcı
+  receiver      User           @relation("ReceiverOtps", fields: [receiverId], references: [id], onDelete: Cascade)
+  senderRaw     String?        @db.VarChar(255)  // ham gönderici kimliği — developer'a "kimden geldi" etiketi. SMS gövdesi DEĞİL.
+  sharingActive Boolean        @default(true)    // receiver bu OTP'nin paylaşımını durdurabilir
+  dismissals    OtpDismissal[]                   // developer'ların kendi feed'inden kaldırdığı işaretler
+  createdAt     DateTime       @default(now())
   @@index([projectId])
-  @@index([expiresAt])
   @@index([deviceId])
   @@index([receiverId])
-  @@index([serviceId])
   @@map("otp_logs")
+}
+
+// Developer bir OTP'yi KENDİ feed'inden kaldırınca oluşur (per-developer yumuşak gizleme).
+// Kalıcı silme DEĞİL: OTP tabloda kalır — receiver/admin görmeye devam eder.
+model OtpDismissal {
+  id        String   @id @default(uuid()) @db.Uuid
+  otpId     String   @db.Uuid
+  otp       OTPLog   @relation(fields: [otpId], references: [id], onDelete: Cascade)
+  userId    String   @db.Uuid          // kaldıran DEVELOPER
+  user      User     @relation("DeveloperDismissals", fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([otpId, userId])
+  @@index([userId])
+  @@map("otp_dismissals")
 }
 
 enum Role          { RECEIVER DEVELOPER ADMIN }
@@ -539,10 +551,13 @@ Paginated: { success: true,  data: T[], pagination: {...},   requestId: string }
 
 ### Endpointler
 ```
-POST /api/auth/register       → Body: { email, password, role, projectId, name? }
+POST /api/auth/register       → Body: { email, password, name, phoneNumber?, role }
+                                  role: RECEIVER | DEVELOPER — ADMIN reddedilir (400 VALIDATION_ERROR, backend zorlar)
+                                  projectId YOK — backend kullanıcıyı varsayılan projeye (Project.isDefault) bağlar
+                                  (self-register proje seçmez/id girmez; varsayılan proje yoksa 404 PROJECT_NOT_FOUND)
                                 → 201 { accessToken, refreshToken, user }
-                                  (user görünümü + proje/grup/paylaşım üye listeleri opsiyonel `name` taşır;
-                                   verilmezse null — mobil `name ?? email` fallback yapar)
+                                  user: { id, email, name, phoneNumber, role, projectId, createdAt } — parola yok;
+                                  name/phoneNumber verilmezse null (mobil `name ?? email` fallback yapar; name kayıtta zorunlu)
 POST /api/auth/login          → 200 { accessToken, refreshToken, user }
 POST /api/auth/refresh        → 200 { accessToken }
 POST /api/auth/logout         → 200 { message }
@@ -553,9 +568,24 @@ DELETE /api/devices/:id       → 200 { message }                  [JWT — RECE
 GET    /api/devices           → 200 Device[] (secretHash hariç, deviceName/phoneNumber dahil) [JWT — RECEIVER]
 
 POST /api/otp                 → 200 { message, deliveredTo }   [Device Secret — X-Device-Secret header]
-GET  /api/otp/history         → 200 paginated OTPLog[]         [JWT — DEVELOPER]
+                                Body: { code, source, senderRaw, context? }  (serviceHint YOK)
+                                context: opsiyonel serbest metin (≤120), gelmezse null — saklanır + history/otp:received'e eklenir
+GET  /api/otp/history         → 200 paginated (rol-duyarlı):
+                                  DEVELOPER → kendisine yönlendirilen, dismiss'lemediği feed
+                                  RECEIVER  → kendi geçmişi (sharingActive dahil)
+                                  ADMIN     → projedeki TÜM receiver'lardan gelen tüm OTP'ler (özet)
+                                item: { id, code, source, senderRaw, context, createdAt,  (OTP süresiz — expiresAt YOK)
+                                        receiver:{ name, email, phoneNumber }, device:{ name }|null,
+                                        (RECEIVER'da ayrıca sharingActive) }  [JWT — DEVELOPER|RECEIVER|ADMIN]
+POST /api/otp/dismiss         → 200 { dismissed: number }      [JWT — DEVELOPER]
+                                Body: { otpIds: string[] }  — seçilen OTP'leri KENDİ feed'inden kaldırır
+                                (per-developer yumuşak gizleme; receiver/admin görmeye devam eder, kalıcı silme değil)
 PATCH /api/otp/:id/sharing    → 200 { sharingActive }          [JWT — RECEIVER, OTP'nin sahibi]
 GET  /api/otp/:id/sharing     → 200 { targets: [...] }         [JWT — RECEIVER, salt-okunur, kimlerle paylaşılıyor]
+GET  /api/otp/sender-patterns → 200 [{ name, pattern }]        [PUBLIC — auth yok]
+                                Statik konfig (v1, src/config/senderPatterns.ts). BARE dizi döner (standart zarf DEĞİL —
+                                iOS Shortcut sözleşmesi). Cihaz SMS gövdesini bu kalıplarla eşleştirip senderRaw=name ile
+                                POST /api/otp'ye gönderir; gövde backend'e gelmez. Yalnızca isActive kayıtlar, order'a göre sıralı.
 
 POST   /api/projects               → 201 Project               [JWT — ADMIN]
 GET    /api/projects/:id           → 200 Project + users       [JWT — üye]
@@ -564,33 +594,30 @@ DELETE /api/projects/:id/users/:uid→ 200                       [JWT — ADMIN]
 
 POST   /api/groups                 → 201 Group                 [JWT — ADMIN]
 GET    /api/groups                 → 200 Group[] (proje bazlı) [JWT — herkes, sadece görüntüleme]
+DELETE /api/groups/:id             → 200 { message }           [JWT — ADMIN, sahibi proje]
+                                     (FK cascade: üyelikler + o grubu hedefleyen routing kuralları da silinir — dangling kalmaz)
 POST   /api/groups/:id/members     → 200                       [JWT — ADMIN]
 DELETE /api/groups/:id/members/:uid→ 200                       [JWT — ADMIN]
 
 POST   /api/routing-rules          → 201 RoutingRule           [JWT — ADMIN]
+                                     Body: { receiverId, targetType, developerId? | groupId? }  (serviceId YOK)
 GET    /api/routing-rules          → 200 RoutingRule[]         [JWT — ADMIN]
 PATCH  /api/routing-rules/:id      → 200 { isActive }          [JWT — ADMIN]
 DELETE /api/routing-rules/:id      → 200 { message }           [JWT — ADMIN]
 
-POST   /api/service-registry            → 201 ServiceRegistry  [JWT — ADMIN] (yeni kural veya kovayı aktive et)
-GET    /api/service-registry            → 200 ServiceRegistry[] (hem aktif hem inaktif/kova) [JWT — ADMIN]
-GET    /api/service-registry/unmatched  → 200 ServiceRegistry[] (sadece isActive:false) [JWT — ADMIN]
-PATCH  /api/service-registry/:id        → 200                  [JWT — ADMIN] (isim/kural güncelle, aktive et)
-DELETE /api/service-registry/:id        → 200 { message }      [JWT — ADMIN]
-
 GET /health                   → 200 { status: 'ok', timestamp }
 ```
 
-### POST /api/otp — Body Değişikliği (FAZ 8)
+### POST /api/otp — Body
 ```
-ÖNCE:  { smsText?: string, code?: string, source: 'ANDROID'|'IOS_SHORTCUT' }
-SONRA: { code: string, source: 'ANDROID'|'IOS_SHORTCUT',
-         senderRaw: string, serviceHint?: string }
+{ code: string (6 haneli), source: 'ANDROID'|'IOS_SHORTCUT', senderRaw: string, context?: string|null }
 ```
-`smsText` body'den TAMAMEN KALDIRILDI — FAZ 8'de parse yeri kararı cihaz tarafına verildi
-(bkz. "Proje" bölümündeki "Parse yeri kararı" notu). `code` artık zorunlu (önceden opsiyoneldi,
-`smsText` ile birlikte alternatifti). `senderRaw` zorunlu hale gelir — servis çözümlemesinin
-birincil sinyalidir. `serviceHint` opsiyoneldir.
+`smsText` body'de YOKTUR — parse cihazda yapılır (bkz. "Proje" bölümündeki "Parse yeri kararı" notu).
+`code` ve `senderRaw` zorunludur. `senderRaw` developer'a gösterilen gönderici etiketidir; servise
+çözülmez, dağıtımı etkilemez. (`serviceHint` kaldırıldı — servis kavramı yok.)
+`context` opsiyoneldir (serbest metin, ≤120 karakter): gelmezse/null gelirse `null` olarak saklanır;
+dağıtımı/routing'i etkilemez. Kalıcılaştırılır ve `GET /api/otp/history` item'ına + `otp:received`
+socket payload'ına eklenir (developer + sahibi receiver görür).
 
 ---
 
@@ -600,9 +627,9 @@ birincil sinyalidir. `serviceHint` opsiyoneldir.
 2. **Device Secret** — `crypto.randomBytes(32)` ile üret (256-bit), hex string olarak döndür. DB'de argon2id ile hash'lenir, plain text asla saklanmaz. Süresiz — sadece manuel revoke ile geçersiz olur. Sadece `POST /api/otp` yetkisi var, başka hiçbir endpointe erişemez.
 3. **Parola** — argon2id: `{ memoryCost: 65536, timeCost: 3, parallelism: 4 }`. Plain text asla loglama. Aynı parametreler Device Secret hash'leme için de kullanılır.
 4. **AES-256-GCM** — Her encrypt için `crypto.randomBytes(16)` IV. Format: `base64(iv):base64(authTag):base64(ciphertext)`. Decrypt'te her bileşeni parse et, boyut doğrula (IV=16 byte, authTag=16 byte), `decipher.final()` try/catch zorunlu — hata → OtpEncryptionError.
-5. **SMS gövdesi asla saklanmaz** — sadece parse edilen 6 haneli kod (şifreli) ve servis çözümleme sinyalleri (`senderRaw`, `serviceHint`) işlenir, ham SMS metni DB'ye hiçbir zaman yazılmaz.
+5. **SMS gövdesi asla saklanmaz** — sadece parse edilen 6 haneli kod (şifreli) ve gönderici etiketi (`senderRaw`) işlenir, ham SMS metni DB'ye hiçbir zaman yazılmaz.
 6. **Rate limiting** — `/api/otp`: 60/dk | `/api/auth/login`: 10/dk | `/api/auth/register`: 5/dk | `/api/devices/register`: 5/dk.
-7. **Yetkilendirme** — RoutingRule, Group ve ServiceRegistry yönetimi sadece ADMIN rolüne açık. Receiver kendi OTP'sinin paylaşım hedefini görebilir ama değiştiremez, sadece `sharingActive` toggle'ına dokunabilir.
+7. **Yetkilendirme** — RoutingRule ve Group yönetimi sadece ADMIN rolüne açık. Receiver kendi OTP'sinin paylaşım hedefini görebilir ama değiştiremez, sadece `sharingActive` toggle'ına dokunabilir.
 8. **HTTP** — `helmet()`, `express.json({ limit: '10kb' })`, CORS whitelist.
 9. **Loglama** — Parola, OTP kodu, JWT token, Device Secret, senderRaw asla loglanmaz (pino redact).
 
@@ -620,11 +647,10 @@ JWT_REFRESH_SECRET=         # min 32 karakter, ACCESS'ten FARKLI
 JWT_ACCESS_EXPIRES=15m
 JWT_REFRESH_EXPIRES=30d
 OTP_ENCRYPTION_KEY=         # 64 hex karakter (32 byte)
-OTP_TTL_DAYS=7
+# OTP geçerlilik süresi YOKTUR (kodlar süresiz, otomatik silme yok). OTP_TTL_DAYS / TTL sabiti kaldırıldı.
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
 DEVICE_SECRET_BYTES=32      # 256-bit
-SERVICE_REGISTRY_CACHE_TTL_MS=60000   # ServiceRegistry kurallarının in-memory cache ömrü
 CORS_ORIGIN=*                # Yerel ağ testi için. Production'da gerçek origin'lerle değiştirilecek.
 ```
 

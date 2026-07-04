@@ -10,15 +10,14 @@ import { deviceAuth } from '@middleware/deviceAuth';
 import { otpRateLimit } from '@middleware/rateLimiter';
 import { validate } from '@middleware/validate';
 import { routingResolver } from '@modules/routing/routing.routes';
-import {
-  serviceRegistryService,
-  serviceResolver,
-} from '@modules/service-registry/registry.routes';
 import { OtpController } from './otp.controller';
 import { AesGcmOtpEncryptor } from './otp.encryptor';
 import { PrismaOtpRepository } from './otp.repository';
 import { OtpService } from './otp.service';
+import { SenderPatternController } from './sender-pattern.controller';
+import { StaticSenderPatternProvider } from './sender-pattern.provider';
 import {
+  dismissOtpsSchema,
   historyQuerySchema,
   processOtpSchema,
   sharingParamsSchema,
@@ -27,7 +26,7 @@ import {
 
 // ── Modül kompozisyon kökü ──
 // Concrete bağımlılıklar burada kurulur; service interface'lere bağlıdır (DIP).
-// FAZ 8: parser kaldırıldı (kod cihazda parse edilir); servis çözümleyici + kova kaydedici eklendi.
+// Parse cihazda yapılır (parser yok); dağıtım receiver bazlı routing resolver ile çözülür.
 const encryptor = new AesGcmOtpEncryptor();
 const repository = new PrismaOtpRepository(prisma);
 const otpService = new OtpService(
@@ -35,11 +34,15 @@ const otpService = new OtpService(
   repository,
   socketNotifier,
   routingResolver,
-  serviceResolver,
-  serviceRegistryService,
   logger,
 );
 const controller = new OtpController(otpService);
+
+// Gönderici kalıpları statik konfigten (v1) sağlanır; provider arayüzü v2 DB'ye geçişi
+// controller'ı değiştirmeden mümkün kılar (DIP/OCP).
+const senderPatternController = new SenderPatternController(
+  new StaticSenderPatternProvider(),
+);
 
 export const otpRouter: Router = Router();
 
@@ -54,13 +57,29 @@ otpRouter.post(
   asyncHandler(controller.process),
 );
 
-// Geçmiş: DEVELOPER kendi proje feed'ini, RECEIVER kendi kodlarını görür (controller rol'e göre dallanır).
+// Gönderici kalıpları (PUBLIC — auth yok). iOS Shortcut/Android bu listeyi çeker, her pattern'i
+// CİHAZDA SMS gövdesine dener; eşleşirse senderRaw=name yapıp POST /api/otp'ye gönderir (gövde
+// backend'e gitmez). Yanıt BARE dizidir (standart zarf YOK) — shortcut sözleşmesi. Handler saf sync.
+// Tek segmentli literal yol; `/:id/sharing` (iki segment) ile çakışmaz.
+otpRouter.get('/sender-patterns', senderPatternController.list);
+
+// Geçmiş (rol-duyarlı, controller dallanır): DEVELOPER kendi feed'i, RECEIVER kendi kodları,
+// ADMIN projedeki tüm receiver'lardan gelen tüm OTP'ler (özet ekranı).
 otpRouter.get(
   '/history',
   authenticate,
-  authorize(Role.DEVELOPER, Role.RECEIVER),
+  authorize(Role.DEVELOPER, Role.RECEIVER, Role.ADMIN),
   validate(historyQuerySchema, 'query'),
   asyncHandler(controller.history),
+);
+
+// DEVELOPER seçtiği OTP'leri KENDİ feed'inden kaldırır (yumuşak gizleme; receiver/admin görmeye devam eder).
+otpRouter.post(
+  '/dismiss',
+  authenticate,
+  authorize(Role.DEVELOPER),
+  validate(dismissOtpsSchema),
+  asyncHandler(controller.dismiss),
 );
 
 // Bir OTP'nin kimlerle paylaşıldığı (salt-okunur) — yalnızca OTP'nin sahibi RECEIVER.

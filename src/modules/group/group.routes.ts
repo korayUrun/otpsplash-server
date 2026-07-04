@@ -54,3 +54,13 @@ groupRouter.delete(
   validate(removeMemberParamsSchema, 'params'),
   asyncHandler(controller.removeMember),
 );
+
+// Grup silme yalnızca ADMIN'e açık. FK cascade üyelikleri ve bu grubu hedefleyen
+// yönlendirme kurallarını da temizler (dangling kural kalmaz).
+groupRouter.delete(
+  '/:id',
+  authenticate,
+  authorize(Role.ADMIN),
+  validate(groupIdParamsSchema, 'params'),
+  asyncHandler(controller.delete),
+);
