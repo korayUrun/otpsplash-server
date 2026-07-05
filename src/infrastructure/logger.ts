@@ -22,6 +22,7 @@ export interface ILogger {
 const REDACT_PATHS = [
   'body.password',
   'body.code',
+  'body.refreshToken',
   'body.smsText',
   'headers.authorization',
   'req.headers.authorization',

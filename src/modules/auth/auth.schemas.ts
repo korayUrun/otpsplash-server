@@ -43,3 +43,11 @@ export const loginSchema = z.object({
 export const refreshSchema = z.object({
   refreshToken: z.string().min(1, 'refreshToken gerekli'),
 });
+
+/**
+ * Çıkış şeması. `refreshToken` opsiyoneldir: verilirse o oturumun ailesi sunucuda iptal edilir
+ * (oturum-bazlı çıkış). Verilmezse çıkış yalnızca istemci taraflıdır (200 döner).
+ */
+export const logoutSchema = z.object({
+  refreshToken: z.string().min(1).optional(),
+});

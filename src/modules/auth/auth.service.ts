@@ -1,4 +1,6 @@
-import { Role, type PrismaClient, type User } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import { RefreshTokenStatus, Role, type PrismaClient, type User } from '@prisma/client';
+import { CONSTANTS } from '@config/constants';
 import { AppError } from '@errors/AppError';
 import {
   AuthenticationError,
@@ -13,11 +15,14 @@ import type {
   AuthTokens,
   IAuthService,
   IPasswordService,
+  IRefreshTokenStore,
   ITokenService,
   LoginDTO,
+  LogoutDTO,
   LogoutResult,
   RefreshDTO,
   RefreshResult,
+  RefreshTokenRecord,
   RegisterDTO,
   SafeUser,
 } from './auth.interfaces';
@@ -26,12 +31,18 @@ import type {
  * Kimlik doğrulama iş mantığı.
  * Bağımlılıklar constructor injection ile geçer (DIP) — concrete değil interface.
  * Beklenen hatalar `Result.fail` ile, beklenmeyen (DB vb.) hatalar throw ile döner.
+ *
+ * Refresh token rotasyonu: her login/register yeni bir oturum ailesi açar; her yenilemede
+ * eski token ROTATED işaretlenip aynı ailede yeni ACTIVE token üretilir. Rotate edilmiş bir
+ * token grace penceresi dışında tekrar gelirse (reuse) tüm aile iptal edilir. Access token'lar
+ * stateless kalır (bkz. CLAUDE.md "Refresh Token Rotasyonu" kararı).
  */
 export class AuthService implements IAuthService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly passwordService: IPasswordService,
     private readonly tokenService: ITokenService,
+    private readonly refreshStore: IRefreshTokenStore,
     private readonly logger: ILogger,
   ) {}
 
@@ -83,7 +94,7 @@ export class AuthService implements IAuthService {
         'yeni kullanıcı kaydedildi',
       );
 
-      return ok(this.issueTokens(user));
+      return ok(await this.issueTokens(user));
     } catch (error) {
       return this.toResult(error);
     }
@@ -107,7 +118,7 @@ export class AuthService implements IAuthService {
         return fail(new AuthenticationError());
       }
 
-      return ok(this.issueTokens(user));
+      return ok(await this.issueTokens(user));
     } catch (error) {
       return this.toResult(error);
     }
@@ -115,48 +126,148 @@ export class AuthService implements IAuthService {
 
   async refresh(dto: RefreshDTO): Promise<Result<RefreshResult>> {
     try {
-      const payload = this.tokenService.verifyRefreshToken(dto.refreshToken);
+      // Süresi dolmuş → TOKEN_EXPIRED (mobil sessizce yenilemeyi dener); geçersiz → TOKEN_INVALID.
+      const { sub, jti, fam } = this.tokenService.verifyRefreshToken(
+        dto.refreshToken,
+      );
+      const record = await this.refreshStore.findByJti(jti);
 
-      // Token geçerli olsa da kullanıcı silinmiş olabilir → tekrar doğrula.
-      const user = await this.prisma.user.findUnique({
-        where: { id: payload.sub },
-      });
-      if (!user) {
-        return fail(new AuthenticationError());
+      // Bilinmeyen/yabancı token (kayıt yok ya da aile/sahip uyuşmuyor) → geçersiz.
+      if (!record || record.familyId !== fam || record.userId !== sub) {
+        return fail(this.invalidToken());
+      }
+      if (record.status === RefreshTokenStatus.REVOKED) {
+        return fail(this.invalidToken());
+      }
+      if (record.status === RefreshTokenStatus.ROTATED) {
+        return this.handleRotated(record);
       }
 
-      const accessToken = this.tokenService.generateAccessToken({
-        sub: user.id,
-        email: user.email,
-        role: user.role,
-        projectId: user.projectId,
-      });
+      // ACTIVE → atomik rotate dene. Yarışta yalnızca bir istek "sahiplenir".
+      const claimed = await this.refreshStore.markRotated(jti, new Date());
+      if (!claimed) {
+        // Başka bir istek önce rotate etti → güncel durumu okuyup grace/reuse dalına gir.
+        const latest = await this.refreshStore.findByJti(jti);
+        if (!latest) {
+          return fail(this.invalidToken());
+        }
+        return this.handleRotated(latest);
+      }
 
-      return ok({ accessToken });
+      return this.rotateInFamily(sub, fam);
     } catch (error) {
       return this.toResult(error);
     }
   }
 
-  async logout(userId: string): Promise<Result<LogoutResult>> {
-    // Refresh token blacklist henüz yok (CLAUDE.md "İleride").
-    // Stateless: client token'ları atar. İz için loglanır.
-    this.logger.info({ userId }, 'kullanıcı çıkış yaptı');
-    return Promise.resolve(ok({ message: 'Çıkış yapıldı' }));
+  async logout(dto: LogoutDTO): Promise<Result<LogoutResult>> {
+    try {
+      // Oturum-bazlı iptal: refresh token verildiyse ailesini iptal et (sahiplik doğrulanır).
+      // Best-effort — bozuk/başkasına ait/süresi dolmuş token sessizce geçilir (istemci token'ları
+      // zaten atar; kullanıcı bazında toplu iptal YAPILMAZ — telefon+tablet oturumları ayrık kalsın).
+      if (dto.refreshToken) {
+        try {
+          const { sub, fam } = this.tokenService.verifyRefreshToken(
+            dto.refreshToken,
+          );
+          if (sub === dto.userId) {
+            await this.refreshStore.revokeFamily(fam);
+          }
+        } catch {
+          // Geçersiz/süresi dolmuş refresh token → iptal edilecek belirli aile yok, yutulur.
+        }
+      }
+
+      this.logger.info({ userId: dto.userId }, 'kullanıcı çıkış yaptı');
+      return ok({ message: 'Çıkış yapıldı' });
+    } catch (error) {
+      return this.toResult(error);
+    }
   }
 
-  /** User → access + refresh token + parolasız kullanıcı görünümü. */
-  private issueTokens(user: User): AuthTokens {
+  /**
+   * ROTATED bir kaydın yeniden sunulması: grace penceresi içindeyse meşru ağ tekrarı/yarış kabul
+   * edilip aynı ailede taze token üretilir; pencere dışındaysa token hırsızlığı (reuse) kabul
+   * edilip tüm aile iptal edilir ve TOKEN_INVALID döner.
+   */
+  private async handleRotated(
+    record: RefreshTokenRecord,
+  ): Promise<Result<RefreshResult>> {
+    if (record.status === RefreshTokenStatus.REVOKED) {
+      return fail(this.invalidToken());
+    }
+
+    const withinGrace =
+      record.rotatedAt !== null &&
+      Date.now() - record.rotatedAt.getTime() <=
+        CONSTANTS.AUTH.REFRESH_REUSE_GRACE_MS;
+
+    if (withinGrace) {
+      return this.rotateInFamily(record.userId, record.familyId);
+    }
+
+    await this.refreshStore.revokeFamily(record.familyId);
+    this.logger.warn(
+      { userId: record.userId, familyId: record.familyId },
+      'refresh token reuse tespit edildi — oturum ailesi iptal edildi',
+    );
+    return fail(this.invalidToken());
+  }
+
+  /**
+   * Verilen aile için yeni access + refresh token çifti üretir (yenileme çıktısı).
+   * Kullanıcı silinmişse oturum yok sayılır (TOKEN_INVALID) — FK cascade kayıtları zaten temizler.
+   */
+  private async rotateInFamily(
+    userId: string,
+    familyId: string,
+  ): Promise<Result<RefreshResult>> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return fail(this.invalidToken());
+    }
+    return ok(await this.mintTokenPair(user, familyId));
+  }
+
+  /**
+   * User → yeni oturum ailesi + token çifti + parolasız kullanıcı görünümü (login/register).
+   * Fırsatçı temizlik: bu kullanıcının süresi geçmiş refresh kayıtları silinir (cron yok).
+   */
+  private async issueTokens(user: User): Promise<AuthTokens> {
+    await this.refreshStore.deleteExpired(user.id);
+    const familyId = randomUUID();
+    const pair = await this.mintTokenPair(user, familyId);
+    return { ...pair, user: this.toSafeUser(user) };
+  }
+
+  /**
+   * Access token + (aynı ailede) yeni refresh token üretir ve refresh token'ı depoya yazar.
+   * issueTokens (yeni aile) ve rotateInFamily (mevcut aile) tarafından paylaşılır.
+   */
+  private async mintTokenPair(
+    user: User,
+    familyId: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     const accessToken = this.tokenService.generateAccessToken({
       sub: user.id,
       email: user.email,
       role: user.role,
       projectId: user.projectId,
     });
-    const refreshToken = this.tokenService.generateRefreshToken({
-      sub: user.id,
+    const { token: refreshToken, jti, expiresAt } =
+      this.tokenService.generateRefreshToken({ sub: user.id, fam: familyId });
+    await this.refreshStore.create({
+      jti,
+      familyId,
+      userId: user.id,
+      expiresAt,
     });
-    return { accessToken, refreshToken, user: this.toSafeUser(user) };
+    return { accessToken, refreshToken };
+  }
+
+  /** İptal/geçersiz refresh token için standart hata — mobil bu kodda login'e yönlendirir. */
+  private invalidToken(): AuthenticationError {
+    return new AuthenticationError('Geçersiz token', ErrorCode.TOKEN_INVALID);
   }
 
   /** Parola alanını ayıklar. */
