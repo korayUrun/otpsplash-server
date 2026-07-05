@@ -27,6 +27,15 @@ export const CONSTANTS = {
     TIME_COST: 3,
     PARALLELISM: 4,
   },
+  AUTH: {
+    /**
+     * Refresh token reuse toleransı (ms). Rotate edilmiş (ROTATED) bir refresh token bu pencere
+     * İÇİNDE tekrar gelirse meşru bir ağ tekrarı/yarış sayılır ve aynı ailede taze token üretilir;
+     * pencere DIŞINDA gelirse token hırsızlığı (reuse) kabul edilip TÜM aile iptal edilir.
+     * Küçük tutulur — meşru istemci zaten çift-yenileme göndermiyor (mobil sözleşmesi).
+     */
+    REFRESH_REUSE_GRACE_MS: 30_000,
+  },
   SOCKET: {
     /**
      * Kullanıcı bazlı oda adı üretici (FAZ 7 hedefli dağıtım).

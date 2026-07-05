@@ -7,6 +7,11 @@ import type {
   RegisterDTO,
 } from './auth.interfaces';
 
+/** Logout gövdesi: oturum-bazlı iptal için opsiyonel refreshToken (bkz. LogoutDTO). */
+interface LogoutBody {
+  refreshToken?: string;
+}
+
 /**
  * Auth HTTP katmanı (SRP: yalnızca request/response).
  * İş mantığı yok — Result'ı açar, hata ise `next`, değilse standart zarfla döner.
@@ -47,7 +52,11 @@ export class AuthController {
       next(new AuthenticationError('Kimlik doğrulama gerekli'));
       return;
     }
-    const result = await this.authService.logout(req.user.sub);
+    const { refreshToken } = req.body as LogoutBody;
+    const result = await this.authService.logout({
+      userId: req.user.sub,
+      refreshToken,
+    });
     if (!result.success) {
       next(result.error);
       return;

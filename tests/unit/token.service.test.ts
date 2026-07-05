@@ -91,10 +91,40 @@ describe('JwtTokenService', () => {
     });
   });
 
+  describe('generateRefreshToken', () => {
+    const fam = '33333333-3333-3333-3333-333333333333';
+
+    it('token + jti + gelecekteki expiresAt döner', () => {
+      const issued = service.generateRefreshToken({ sub: samplePayload.sub, fam });
+      expect(issued.token.split('.')).toHaveLength(3);
+      expect(typeof issued.jti).toBe('string');
+      expect(issued.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('sub/jti/fam claimlerini gömer (verify ile round-trip)', () => {
+      const issued = service.generateRefreshToken({ sub: samplePayload.sub, fam });
+      const decoded = service.verifyRefreshToken(issued.token);
+      expect(decoded.sub).toBe(samplePayload.sub);
+      expect(decoded.jti).toBe(issued.jti);
+      expect(decoded.fam).toBe(fam);
+    });
+
+    it('her çağrı benzersiz jti üretir', () => {
+      const a = service.generateRefreshToken({ sub: samplePayload.sub, fam });
+      const b = service.generateRefreshToken({ sub: samplePayload.sub, fam });
+      expect(a.jti).not.toBe(b.jti);
+    });
+  });
+
   describe('verifyRefreshToken', () => {
-    it('refresh token sub döner', () => {
-      const token = service.generateRefreshToken({ sub: samplePayload.sub });
-      expect(service.verifyRefreshToken(token).sub).toBe(samplePayload.sub);
+    const fam = '33333333-3333-3333-3333-333333333333';
+
+    it('sub/jti/fam döner', () => {
+      const { token } = service.generateRefreshToken({ sub: samplePayload.sub, fam });
+      const decoded = service.verifyRefreshToken(token);
+      expect(decoded.sub).toBe(samplePayload.sub);
+      expect(decoded.fam).toBe(fam);
+      expect(typeof decoded.jti).toBe('string');
     });
 
     it('access secret ile imzalanmış token refresh olarak geçersiz', () => {
@@ -102,11 +132,14 @@ describe('JwtTokenService', () => {
       expectAuthError(() => service.verifyRefreshToken(access), ErrorCode.TOKEN_INVALID);
     });
 
-    it('sub claim taşımayan refresh token → AuthenticationError (TOKEN_INVALID)', () => {
-      // subject verilmeden imzalanır → decoded.sub undefined.
-      const noSub = jwt.sign({}, env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
+    it('jti/fam claim taşımayan refresh token → AuthenticationError (TOKEN_INVALID)', () => {
+      // subject var ama jti/fam yok → claim tip kontrolü düşer.
+      const noClaims = jwt.sign({}, env.JWT_REFRESH_SECRET, {
+        subject: samplePayload.sub,
+        expiresIn: '30d',
+      });
       expectAuthError(
-        () => service.verifyRefreshToken(noSub),
+        () => service.verifyRefreshToken(noClaims),
         ErrorCode.TOKEN_INVALID,
       );
     });

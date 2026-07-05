@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Role, type Device, type Project, type User } from '@prisma/client';
 import { tokenService } from '@modules/auth/token.service';
 import { createTestDevice, createTestProject, createTestUser } from './fixtures';
@@ -44,7 +45,13 @@ export async function createAuthContext(
     role: user.role,
     projectId: user.projectId,
   });
-  const refreshToken = tokenService.generateRefreshToken({ sub: user.id });
+  // Not: token'ın şekli için üretilir; DB'de karşılık gelen aile kaydı YOKTUR — bu yüzden
+  // /api/auth/refresh'e karşı kullanılamaz (o akış gerçek login üretir). Testlerde yalnızca
+  // accessToken kullanılır; refreshToken alanı zarf bütünlüğü içindir.
+  const { token: refreshToken } = tokenService.generateRefreshToken({
+    sub: user.id,
+    fam: randomUUID(),
+  });
 
   return { project, user, password, accessToken, refreshToken };
 }

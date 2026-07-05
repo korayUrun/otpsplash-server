@@ -23,10 +23,15 @@ export interface DevicePayload {
 }
 
 /**
- * Refresh token minimal bilgi taşır — rol/projectId yenilemede DB'den tazelenir.
+ * Refresh token claim'leri. Rol/projectId taşımaz — yenilemede DB'den tazelenir.
+ * - `sub` = kullanıcı id'si.
+ * - `jti` = token'ın benzersiz kimliği (JWT jti); sunucudaki `refresh_tokens.id` ile eşleşir.
+ * - `fam` = oturum ailesi id'si; rotasyon zinciri + reuse tespiti bu aile üzerinden yürür.
  */
 export interface RefreshPayload {
   sub: string;
+  jti: string;
+  fam: string;
 }
 
 /** Sayfalama girişi (repository katmanına geçer). */

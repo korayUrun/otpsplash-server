@@ -174,20 +174,65 @@ describe('POST /api/auth/login', () => {
 });
 
 describe('POST /api/auth/refresh', () => {
-  it('200 — geçerli refresh token yeni access token döner', async () => {
+  /** Yeni bir kullanıcı oluşturup login olur; login body'sini (token çifti) döner. */
+  async function loginNewUser(email: string): Promise<{ accessToken: string; refreshToken: string }> {
     const project = await createTestProject();
-    await createTestUser({ projectId: project.id, email: 'refresh@test.com' });
-
+    await createTestUser({ projectId: project.id, email });
     const login = await request(app).post('/api/auth/login').send({
-      email: 'refresh@test.com',
+      email,
       password: DEFAULT_PASSWORD,
     });
-    const { refreshToken } = login.body.data;
+    return login.body.data;
+  }
+
+  it('200 — geçerli refresh token yeni access + refresh token döner (rotasyon)', async () => {
+    const { refreshToken } = await loginNewUser('refresh@test.com');
 
     const res = await request(app).post('/api/auth/refresh').send({ refreshToken });
 
     expect(res.status).toBe(200);
     expect(res.body.data.accessToken).toEqual(expect.any(String));
+    expect(res.body.data.refreshToken).toEqual(expect.any(String));
+    // Rotasyon: dönen refresh token eskisinden farklı olmalı.
+    expect(res.body.data.refreshToken).not.toBe(refreshToken);
+  });
+
+  it('200 — rotate edilmiş token grace penceresi içinde taze token döner (ağ tekrarı toleransı)', async () => {
+    const { refreshToken: first } = await loginNewUser('grace@test.com');
+
+    // İlk yenileme → first ROTATED (rotatedAt = şimdi, grace içinde).
+    const rotated = await request(app).post('/api/auth/refresh').send({ refreshToken: first });
+    expect(rotated.status).toBe(200);
+
+    // Grace içinde first'ü tekrar sunmak reuse SAYILMAZ; taze bir token döner.
+    const retry = await request(app).post('/api/auth/refresh').send({ refreshToken: first });
+    expect(retry.status).toBe(200);
+    expect(retry.body.data.refreshToken).toEqual(expect.any(String));
+  });
+
+  it('401 — grace dışında rotate edilmiş token reuse sayılır → aile iptal (TOKEN_INVALID)', async () => {
+    const { refreshToken: first } = await loginNewUser('reuse@test.com');
+
+    const rotated = await request(app).post('/api/auth/refresh').send({ refreshToken: first });
+    expect(rotated.status).toBe(200);
+    const second = rotated.body.data.refreshToken;
+
+    // Grace penceresini beklemek yerine ROTATED kaydın rotatedAt'ını geçmişe çekiyoruz
+    // (test DB her testte temizlenir → yalnızca bu ailenin kayıtları var).
+    await prisma.refreshToken.updateMany({
+      where: { rotatedAt: { not: null } },
+      data: { rotatedAt: new Date(Date.now() - 60_000) },
+    });
+
+    // Eski (first) token tekrar sunulur → reuse tespiti, TÜM aile iptal.
+    const reuse = await request(app).post('/api/auth/refresh').send({ refreshToken: first });
+    expect(reuse.status).toBe(401);
+    expect(reuse.body.error.code).toBe('TOKEN_INVALID');
+
+    // Reuse aileyi iptal ettiğinden geçerli (second) token de artık çalışmaz.
+    const after = await request(app).post('/api/auth/refresh').send({ refreshToken: second });
+    expect(after.status).toBe(401);
+    expect(after.body.error.code).toBe('TOKEN_INVALID');
   });
 
   it('401 — geçersiz refresh token', async () => {
@@ -226,6 +271,27 @@ describe('POST /api/auth/logout', () => {
   it('401 — token yok', async () => {
     const res = await request(app).post('/api/auth/logout');
     expect(res.status).toBe(401);
+  });
+
+  it('200 — refreshToken ile o oturumun ailesi iptal edilir (sonra refresh 401)', async () => {
+    const project = await createTestProject();
+    await createTestUser({ projectId: project.id, email: 'logout-session@test.com' });
+    const login = await request(app).post('/api/auth/login').send({
+      email: 'logout-session@test.com',
+      password: DEFAULT_PASSWORD,
+    });
+    const { accessToken, refreshToken } = login.body.data;
+
+    const res = await request(app)
+      .post('/api/auth/logout')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ refreshToken });
+    expect(res.status).toBe(200);
+
+    // İptal sonrası refresh token artık kabul edilmez.
+    const after = await request(app).post('/api/auth/refresh').send({ refreshToken });
+    expect(after.status).toBe(401);
+    expect(after.body.error.code).toBe('TOKEN_INVALID');
   });
 });
 

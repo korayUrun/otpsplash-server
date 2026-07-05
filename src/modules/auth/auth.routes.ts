@@ -8,13 +8,26 @@ import { validate } from '@middleware/validate';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { Argon2PasswordService } from './password.service';
+import { RefreshTokenRepository } from './refreshToken.repository';
 import { tokenService } from './token.service';
-import { loginSchema, refreshSchema, registerSchema } from './auth.schemas';
+import {
+  loginSchema,
+  logoutSchema,
+  refreshSchema,
+  registerSchema,
+} from './auth.schemas';
 
 // ── Modül kompozisyon kökü ──
 // Concrete bağımlılıklar burada kurulur; service'ler interface'lere bağlıdır (DIP).
 const passwordService = new Argon2PasswordService();
-const authService = new AuthService(prisma, passwordService, tokenService, logger);
+const refreshTokenStore = new RefreshTokenRepository(prisma);
+const authService = new AuthService(
+  prisma,
+  passwordService,
+  tokenService,
+  refreshTokenStore,
+  logger,
+);
 const controller = new AuthController(authService);
 
 export const authRouter: Router = Router();
@@ -35,4 +48,9 @@ authRouter.post(
 
 authRouter.post('/refresh', validate(refreshSchema), asyncHandler(controller.refresh));
 
-authRouter.post('/logout', authenticate, asyncHandler(controller.logout));
+authRouter.post(
+  '/logout',
+  authenticate,
+  validate(logoutSchema),
+  asyncHandler(controller.logout),
+);

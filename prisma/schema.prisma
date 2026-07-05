@@ -21,6 +21,7 @@ model User {
   routingRules RoutingRule[]  @relation("ReceiverRules")
   receivedOtps OTPLog[]       @relation("ReceiverOtps") // sahiplik kanıtı — deviceId'den bağımsız
   dismissals   OtpDismissal[] @relation("DeveloperDismissals") // developer'ın kendi feed'inden kaldırdığı OTP'ler
+  refreshTokens RefreshToken[] @relation("UserRefreshTokens") // aktif/rotate/iptal oturum aileleri (refresh rotasyonu)
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
@@ -168,6 +169,35 @@ model OtpDismissal {
   @@unique([otpId, userId]) // aynı OTP bir developer için iki kez kaldırılamaz
   @@index([userId])
   @@map("otp_dismissals")
+}
+
+// Refresh token rotasyonu — her yenilemede eski token ROTATED işaretlenir, aynı ailede yeni
+// ACTIVE token üretilir. Rotate edilmiş bir token grace penceresi dışında tekrar gelirse
+// (reuse) TÜM aile REVOKED edilir. Access token'lar stateless kalır — yalnızca refresh stateful.
+//
+// `id` = JWT jti claim'i (servis üretir; @default YOK — kimlik JWT ile hizalı olmalı).
+// Aile (familyId) = bir login/register oturumunun rotasyon zinciri. Aile bazında scope'lanır —
+// kullanıcı bazında DEĞİL — ki aynı kullanıcı telefon+tablette çakışmadan ayrı oturum taşısın.
+model RefreshToken {
+  id        String             @id @db.Uuid // JWT jti — servis üretir (@default yok)
+  familyId  String             @db.Uuid // oturum ailesi (rotasyon zinciri); reuse'da tüm aile iptal
+  userId    String             @db.Uuid
+  user      User               @relation("UserRefreshTokens", fields: [userId], references: [id], onDelete: Cascade)
+  status    RefreshTokenStatus @default(ACTIVE)
+  rotatedAt DateTime? // ACTIVE→ROTATED anı; grace penceresi (reuse toleransı) buna göre hesaplanır
+  expiresAt DateTime // JWT exp ile hizalı — süresi geçen kayıtlar login'de temizlenir
+  createdAt DateTime           @default(now())
+
+  @@index([familyId])
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+enum RefreshTokenStatus {
+  ACTIVE // kullanılabilir; yenilemede rotate edilir
+  ROTATED // yenilendi; grace dışında tekrar gelirse reuse sayılır
+  REVOKED // reuse tespiti / logout / şifre değişimi ile iptal
 }
 
 enum Role {

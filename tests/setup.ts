@@ -12,13 +12,14 @@ const isIntegration = testPath.includes(`${sep}integration${sep}`);
 if (isIntegration) {
   beforeEach(async () => {
     // FK sırası (çocuk → ebeveyn):
-    // OtpDismissal → OTPLog → Device → RoutingRule → GroupMember → Group → User → Project.
+    // OtpDismissal → OTPLog → Device → RoutingRule → GroupMember → Group → RefreshToken → User → Project.
     await prisma.otpDismissal.deleteMany();
     await prisma.oTPLog.deleteMany();
     await prisma.device.deleteMany();
     await prisma.routingRule.deleteMany();
     await prisma.groupMember.deleteMany();
     await prisma.group.deleteMany();
+    await prisma.refreshToken.deleteMany();
     await prisma.user.deleteMany();
     await prisma.project.deleteMany();
     // Rate limit sayaçlarını sıfırla → testler birbirini etkilemesin.

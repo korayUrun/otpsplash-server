@@ -62,7 +62,7 @@ Katman 2 — Dağıtım (backend'de, admin kuralına göre otomatik)
 | Gerçek zamanlı | Socket.IO 4 | In-memory, adapter-ready |
 | ORM | Prisma 5 | — |
 | Veritabanı | PostgreSQL 15 | — |
-| Auth (kullanıcı) | jsonwebtoken | access 15dk / refresh 30gün |
+| Auth (kullanıcı) | jsonwebtoken | access 15dk (stateless) / refresh 30gün (rotasyonlu, DB'de izlenir) |
 | Auth (cihaz) | Device Secret | 256-bit random, argon2id hash'li, süresiz |
 | Parola | **argon2id** | bcryptjs değil — OWASP 2024, C++ binding, 3-5x hızlı |
 | Validation | Zod | Her endpointte zorunlu |
@@ -119,7 +119,7 @@ YASAK:
 - Stack trace asla client'a sızdırılmaz.
 
 ### Logging
-- pino redact: `['body.password', 'body.code', 'body.senderRaw', 'headers.authorization', 'headers.x-device-secret']`
+- pino redact: `['body.password', 'body.code', 'body.refreshToken', 'body.senderRaw', 'headers.authorization', 'headers.x-device-secret']`
   (`smsText` artık listede yok — çünkü hiçbir zaman backend'e gelmiyor, redact etmeye gerek kalmadı)
 - Her request'e UUID (`req.id`) ekle, her response'da dön.
 - Log seviyesi production'da `info`.
@@ -157,6 +157,46 @@ Device Secret → "Ben Y'nin şu cihazıyım"          → BroadcastReceiver ve 
 
 Bu ayrım hem iOS hem Android için geçerlidir — ikisi de "sürekli arka planda çalışan otomasyon"
 kategorisine girer, ikisi de aynı `deviceAuth` middleware'ini kullanır.
+
+### Refresh Token Rotasyonu — Oturum Aileleri + Reuse Tespiti
+Access token'lar **stateless kalır** (15dk, DB'de izlenmez). Refresh token'lar ise **stateful**tir:
+her biri `refresh_tokens` tablosunda bir satırla temsil edilir ve **rotate** edilir. JWT üç claim
+taşır: `sub` (kullanıcı), `jti` (token kimliği = satır id'si), `fam` (oturum ailesi).
+
+```
+login/register → yeni aile (familyId) + ACTIVE refresh token
+POST /refresh  → eski token ACTIVE→ROTATED, aynı ailede yeni ACTIVE token; yanıt { accessToken, refreshToken }
+```
+
+**Sözleşme değişikliği:** `POST /api/auth/refresh` artık `{ accessToken }` değil
+`{ accessToken, refreshToken }` döner (rotasyon gereği). Mobil bu alanı bekler; gelmezse eskisini korur.
+
+**Aile bazında scope — kullanıcı bazında DEĞİL.** Bir aile tek bir login oturumunun rotasyon
+zinciridir. Aynı kullanıcı telefon+tablette iki ayrı aile taşır; birinin iptali diğerini etkilemez
+(aksi halde cihazlar birbirini atardı).
+
+**Reuse tespiti + grace penceresi.** Rotate edilmiş (ROTATED) bir token tekrar gelirse:
+```
+now - rotatedAt ≤ REFRESH_REUSE_GRACE_MS (30sn) → meşru ağ tekrarı/yarış: aynı ailede taze token üret
+now - rotatedAt >  grace                          → token hırsızlığı: TÜM aile REVOKED, TOKEN_INVALID
+```
+Grace penceresi, meşru istemcinin çok yakın zamanlı çift-isteğinin (ağ tekrarı) yanlış alarm
+üretmesini önler. Eşzamanlılık: ACTIVE→ROTATED geçişi koşullu `updateMany` ile atomiktir
+(`markRotated` yarışta yalnızca bir isteğe `true` döner) — kaybeden istek grace dalına düşer.
+
+**Red kodu.** İptal/geçersiz/reuse refresh token → `TOKEN_INVALID` (HTTP + socket). Süresi dolmuş
+→ `TOKEN_EXPIRED`. Access token'lar stateless olduğundan backend `TOKEN_REVOKED` ÜRETMEZ — iptal
+sayılacak her durum TOKEN_INVALID altında toplanır (socket handshake kararıyla hizalı).
+
+**Logout — oturum-bazlı iptal.** `POST /api/auth/logout` access token'la kimliği kanıtlar; gövdede
+opsiyonel `refreshToken` verilirse SADECE o oturumun ailesi REVOKED edilir (best-effort — bozuk/
+başkasına ait token sessizce geçilir, 200 döner). Kullanıcı bazında toplu iptal YAPILMAZ.
+
+**Şifre değişimi.** `IRefreshTokenStore.revokeAllForUser` kullanıcının tüm ailelerini iptal eder;
+şifre-değiştir endpoint'i eklendiğinde bu çağrılmalıdır (kapasite hazır, henüz çağıran yok).
+
+**Temizlik.** OTP gibi refresh token'lar için de cron YOK; süresi geçmiş kayıtlar login'de
+fırsatçı olarak silinir (`deleteExpired`). Kullanıcı silinince FK cascade ile aileler de gider.
 
 ### Dağıtım Mimari Kararı (FAZ 7 — servissiz sadeleştirilmiş hali)
 Receiver paylaşımı elle yapmaz. Hedef kitle admin tarafından `RoutingRule` ile önceden
@@ -288,7 +328,7 @@ src/
 ├── app.ts                    → Express + Socket.IO factory
 ├── config/
 │   ├── env.ts                → Zod env parse — fail-fast
-│   ├── constants.ts          → CONSTANTS (OTP, ARGON2, SOCKET, PAGINATION, RATE_LIMIT, DEVICE, ROUTING)
+│   ├── constants.ts          → CONSTANTS (OTP, ARGON2, AUTH, SOCKET, PAGINATION, RATE_LIMIT, DEVICE, ROUTING)
 │   └── prisma.ts             → Singleton
 ├── errors/
 │   ├── AppError.ts           → Abstract base
@@ -325,13 +365,14 @@ src/
 │   └── errorHandler.ts       → Global error handler
 ├── modules/
 │   ├── auth/
-│   │   ├── auth.interfaces.ts    → IPasswordService, ITokenService, IAuthService, DTO'lar
+│   │   ├── auth.interfaces.ts    → IPasswordService, ITokenService, IRefreshTokenStore, IAuthService, DTO'lar
 │   │   ├── password.service.ts   → argon2id hash/verify (async)
-│   │   ├── token.service.ts      → JWT sign/verify (sync)
-│   │   ├── auth.service.ts       → register, login, refresh, logout
+│   │   ├── token.service.ts      → JWT sign/verify (sync); refresh token jti+fam claim'li üretilir/doğrulanır
+│   │   ├── refreshToken.repository.ts → Prisma refresh token deposu (rotasyon + reuse tespiti) — ASYNC
+│   │   ├── auth.service.ts       → register, login, refresh (rotasyon/reuse), logout (oturum-bazlı)
 │   │   ├── auth.controller.ts    → HTTP katmanı
 │   │   ├── auth.routes.ts        → Route tanımları
-│   │   └── auth.schemas.ts       → Zod şemaları
+│   │   └── auth.schemas.ts       → Zod şemaları (login/register/refresh/logout)
 │   ├── device/
 │   │   ├── device.interfaces.ts  → IDeviceService, IDeviceRepository, ISecretService, DTO'lar
 │   │   ├── secret.service.ts     → Device Secret üret (sync) + hash/verify (async, argon2id)
@@ -399,11 +440,30 @@ model User {
   routingRules  RoutingRule[]  @relation("ReceiverRules")
   receivedOtps  OTPLog[]       @relation("ReceiverOtps")  // sahiplik kanıtı — deviceId'den bağımsız
   dismissals    OtpDismissal[] @relation("DeveloperDismissals")  // developer'ın feed'inden kaldırdığı OTP'ler
+  refreshTokens RefreshToken[] @relation("UserRefreshTokens")   // aktif/rotate/iptal oturum aileleri
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   @@index([email])
   @@index([projectId])
   @@map("users")
+}
+
+// Refresh token rotasyonu (bkz. "Refresh Token Rotasyonu" mimari kararı).
+// id = JWT jti (@default YOK — servis üretir); familyId = oturum ailesi (rotasyon zinciri).
+// Rotate edilmiş token grace dışında tekrar gelirse (reuse) aynı ailenin tüm kayıtları REVOKED.
+model RefreshToken {
+  id        String             @id @db.Uuid          // JWT jti — servis üretir
+  familyId  String             @db.Uuid              // oturum ailesi; reuse'da tüm aile iptal
+  userId    String             @db.Uuid
+  user      User               @relation("UserRefreshTokens", fields: [userId], references: [id], onDelete: Cascade)
+  status    RefreshTokenStatus @default(ACTIVE)      // ACTIVE | ROTATED | REVOKED
+  rotatedAt DateTime?                                 // ACTIVE→ROTATED anı; grace penceresi buna göre
+  expiresAt DateTime                                  // JWT exp ile hizalı; login'de süresi geçenler silinir
+  createdAt DateTime           @default(now())
+  @@index([familyId])
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 model Project {
@@ -532,10 +592,11 @@ model OtpDismissal {
   @@map("otp_dismissals")
 }
 
-enum Role          { RECEIVER DEVELOPER ADMIN }
-enum Source        { ANDROID IOS_SHORTCUT }
-enum Platform      { ANDROID IOS }
-enum RoutingTarget { DEVELOPER GROUP }
+enum Role               { RECEIVER DEVELOPER ADMIN }
+enum Source             { ANDROID IOS_SHORTCUT }
+enum Platform           { ANDROID IOS }
+enum RoutingTarget      { DEVELOPER GROUP }
+enum RefreshTokenStatus { ACTIVE ROTATED REVOKED }
 ```
 
 ---
@@ -559,8 +620,10 @@ POST /api/auth/register       → Body: { email, password, name, phoneNumber?, r
                                   user: { id, email, name, phoneNumber, role, projectId, createdAt } — parola yok;
                                   name/phoneNumber verilmezse null (mobil `name ?? email` fallback yapar; name kayıtta zorunlu)
 POST /api/auth/login          → 200 { accessToken, refreshToken, user }
-POST /api/auth/refresh        → 200 { accessToken }
-POST /api/auth/logout         → 200 { message }
+POST /api/auth/refresh        → 200 { accessToken, refreshToken }   (ROTASYON: eski refresh token geçersizleşir;
+                                reuse/iptal → 401 TOKEN_INVALID, süresi dolmuş → 401 TOKEN_EXPIRED)
+POST /api/auth/logout         → 200 { message }   Body: { refreshToken? }  [JWT]
+                                refreshToken verilirse o oturumun ailesi sunucuda iptal edilir (oturum-bazlı çıkış)
 
 POST   /api/devices/register  → Body: { deviceName?, phoneNumber? } (ikisi de opsiyonel)
                                  → 201 { deviceId, deviceSecret }   [JWT — RECEIVER]
