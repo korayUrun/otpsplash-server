@@ -23,9 +23,11 @@ const REDACT_PATHS = [
   'body.password',
   'body.code',
   'body.refreshToken',
-  'body.smsText',
+  'body.senderRaw',
   'headers.authorization',
+  'headers["x-device-secret"]',
   'req.headers.authorization',
+  'req.headers["x-device-secret"]',
   'res.headers["set-cookie"]',
 ];
 
