@@ -7,6 +7,7 @@ import {
 } from '@prisma/client';
 import type {
   CreateRoutingRuleData,
+  DeveloperLink,
   IRoutingRepository,
   RoutingRuleWithRelations,
   RoutingRuleWithTargets,
@@ -86,10 +87,13 @@ export class PrismaRoutingRepository implements IRoutingRepository {
 
   /**
    * `findActiveTargets`'in TERSİ: developer'a doğrudan (`developerId`) VEYA üye olduğu bir
-   * grup üzerinden (`group.members.some`) yönlendirilen AKTİF kuralların benzersiz `receiverId`
-   * listesini döner. Grup üyeliği DB'de `some` ile çözülür — bellekte flatten gerekmez.
+   * grup üzerinden (`group.members.some`) yönlendirilen AKTİF kuralları, link zamanı hesabı
+   * için gereken timestamp'lerle döner. GROUP kurallarında iç `members` seçimi bu
+   * developer'ın üyeliğine daraltılır (`where: { userId }`) — `members[0]` her zaman bu
+   * developer'ın satırıdır. Tekilleştirme YAPILMAZ (aynı receiver'a birden çok link
+   * dönebilir); en-erken-kazanır kuralı resolver'da uygulanır.
    */
-  async findReceiverIdsForDeveloper(developerId: string): Promise<string[]> {
+  async findDeveloperLinks(developerId: string): Promise<DeveloperLink[]> {
     const rules = await this.prisma.routingRule.findMany({
       where: {
         isActive: true,
@@ -101,10 +105,28 @@ export class PrismaRoutingRepository implements IRoutingRepository {
           },
         ],
       },
-      select: { receiverId: true },
-      distinct: ['receiverId'],
+      select: {
+        receiverId: true,
+        targetType: true,
+        createdAt: true,
+        group: {
+          select: {
+            members: {
+              where: { userId: developerId },
+              select: { createdAt: true },
+            },
+          },
+        },
+      },
     });
-    return rules.map((rule) => rule.receiverId);
+    return rules.map((rule) => ({
+      receiverId: rule.receiverId,
+      ruleCreatedAt: rule.createdAt,
+      memberCreatedAt:
+        rule.targetType === RoutingTarget.GROUP
+          ? (rule.group?.members[0]?.createdAt ?? null)
+          : null,
+    }));
   }
 
   async toggle(id: string, isActive: boolean): Promise<RoutingRule> {

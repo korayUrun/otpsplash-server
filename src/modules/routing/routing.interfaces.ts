@@ -80,6 +80,27 @@ export type RoutingRuleWithTargets = RoutingRule & {
   group: (Group & { members: (GroupMember & { user: User })[] }) | null;
 };
 
+/**
+ * Bir developer'ı bir receiver'a bağlayan TEK aktif link'in ham zaman bilgisi.
+ * DEVELOPER kuralında `memberCreatedAt` null'dur; GROUP kuralında bu developer'ın
+ * o gruba EKLENDİĞİ andır. Etkin link zamanı resolver'da hesaplanır (SYNC).
+ */
+export interface DeveloperLink {
+  receiverId: string;
+  ruleCreatedAt: Date;
+  memberCreatedAt: Date | null;
+}
+
+/**
+ * Developer'ın görmeye yetkili olduğu bir receiver + görme yetkisinin BAŞLADIĞI an.
+ * `linkedAt`'ten ÖNCE oluşmuş OTP'ler developer'a görünmez — sonradan bağlanan bir
+ * developer geçmiş kodları göremez (ürün kararı, 2026-07-12).
+ */
+export interface VisibleReceiver {
+  receiverId: string;
+  linkedAt: Date;
+}
+
 /** Admin/receiver listesi için: kural + receiver/grup join'li hali (developer ayrı çekilir). */
 export type RoutingRuleWithRelations = RoutingRule & {
   receiver: User;
@@ -114,10 +135,12 @@ export interface IRoutingRepository {
   findActiveTargets(receiverId: string): Promise<RoutingRuleWithTargets[]>;
   /**
    * `findActiveTargets`'in TERSİ: bir developer'a (doğrudan `developerId` veya üye olduğu
-   * bir grup üzerinden) yönlendirilen AKTİF kuralların benzersiz `receiverId` listesini döner.
-   * Developer geçmişini süzmek için kullanılır (canlı emit ile aynı kapsam).
+   * bir grup üzerinden) yönlendirilen AKTİF kuralların link satırlarını, link zamanı
+   * hesabı için gereken timestamp'lerle döner (kural başına bir satır; aynı receiver
+   * birden çok satırda görünebilir — tekilleştirme resolver'da). Developer geçmişini
+   * süzmek için kullanılır (canlı emit ile aynı kapsam + link zamanı).
    */
-  findReceiverIdsForDeveloper(developerId: string): Promise<string[]>;
+  findDeveloperLinks(developerId: string): Promise<DeveloperLink[]>;
   /** Kuralın aktiflik durumunu günceller. */
   toggle(id: string, isActive: boolean): Promise<RoutingRule>;
   /** Kuralı siler. */
@@ -145,10 +168,14 @@ export interface IRoutingResolver {
   resolveTargetDetails(receiverId: string): Promise<TargetUser[]>;
   /**
    * `resolveTargets`'in TERSİ: bir developer'ın hangi receiver'ların kodlarını görmeye
-   * yetkili olduğunu döner (doğrudan + grup üyeliği, yalnızca aktif kurallar).
-   * Tekilleştirilmiş receiverId listesi; hiç kural yoksa boş liste (developer hiçbir kod görmez).
+   * yetkili olduğunu, yetkiye ek olarak yetkinin BAŞLADIĞI anla (`linkedAt`) döner
+   * (doğrudan + grup üyeliği, yalnızca aktif kurallar). Etkin link zamanı:
+   * DEVELOPER kuralı → kuralın `createdAt`'i; GROUP kuralı → kural ile üyeliğin
+   * geç olanı (`max`) — ikisi de var olmadan görünürlük başlamaz. Aynı receiver'a
+   * birden çok link varsa EN ERKEN kazanır. Receiver başına tek kayıt; hiç kural
+   * yoksa boş liste (developer hiçbir kod görmez).
    */
-  resolveVisibleReceiverIds(developerId: string): Promise<string[]>;
+  resolveVisibleReceivers(developerId: string): Promise<VisibleReceiver[]>;
 }
 
 /**

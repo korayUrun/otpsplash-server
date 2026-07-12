@@ -1,7 +1,10 @@
 import type { OTPLog, Prisma, Source } from '@prisma/client';
 import type { Result } from '@app-types/Result';
 import type { PaginatedResult, PaginationOptions } from '@app-types/index';
-import type { TargetUser } from '@modules/routing/routing.interfaces';
+import type {
+  TargetUser,
+  VisibleReceiver,
+} from '@modules/routing/routing.interfaces';
 
 // ───────────────────────── DTO'lar ─────────────────────────
 
@@ -198,14 +201,15 @@ export interface IOtpRepository {
   /**
    * Bir developer'ın görmeye yetkili olduğu kayıtları sayfalı döner (createdAt desc).
    * Paylaşımı AÇIK (`sharingActive:true`) + bu developer'ın KENDİ feed'inden kaldırMADIĞI
-   * (dismissal yok) + yalnızca verilen receiver'lara ait kayıtlar gelir. OTP süresiz olduğundan
-   * expiry filtresi YOKTUR. `receiverIds` boşsa çağrılmamalıdır (service kısa devre yapar).
-   * receiver + device include edilir.
+   * (dismissal yok) + yalnızca verilen receiver'lara ait VE o receiver'ın `linkedAt`
+   * anından SONRA oluşmuş kayıtlar gelir — sonradan bağlanan developer geçmiş kodları
+   * göremez. OTP süresiz olduğundan expiry filtresi YOKTUR. `receivers` boşsa
+   * çağrılmamalıdır (service kısa devre yapar). receiver + device include edilir.
    */
   findForDeveloper(
     projectId: string,
     developerId: string,
-    receiverIds: string[],
+    receivers: VisibleReceiver[],
     options: PaginationOptions,
   ): Promise<PaginatedResult<OtpLogWithRelations>>;
   /**
@@ -254,6 +258,12 @@ export interface IOtpNotifier {
    * `deliveredTo`'yu ETKİLEMEZ; routing'den de bağımsız olarak her OTP için çağrılır.
    */
   notifyReceiver(receiverId: string, payload: OtpNotification): void;
+  /**
+   * OTP'yi projenin admin odasına (`project:{id}`) yayınlar — admin Özet ekranı yeni
+   * kodu refresh'siz görür. `deliveredTo`'yu ETKİLEMEZ; routing'den bağımsız her OTP
+   * için çağrılır (admin özeti filtresizdir). `otp:revoked` admin'e YAYINLANMAZ.
+   */
+  notifyAdmins(projectId: string, payload: OtpNotification): void;
   /**
    * Paylaşımı durdurulan OTP için `otp:revoked` event'ini hedef developer'lara yayınlar.
    * `notify` ile aynı (user-bazlı) hedeflemeyi kullanır — çift emit önlenir.

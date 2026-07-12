@@ -493,6 +493,8 @@ describe('GET /api/otp/history — DEVELOPER routing-süzülü feed', () => {
   it('OTP süresiz — createdAt eski olsa bile feed\'de kalır (otomatik düşmez)', async () => {
     const { projectId, receiver, developer } = await projectWithRoutedDeveloper();
     // createdAt'i günler öncesine çek — eskiden expiry ile düşerdi, artık kalmalı.
+    // Kuralı OTP'den de eskiye çek: link-zamanı filtresi (link öncesi kod görünmez)
+    // bu testin konusu değil; burada yalnızca "süresizlik" doğrulanıyor.
     const { otpLog } = await createTestOtpLog({
       projectId,
       receiverId: receiver.id,
@@ -501,6 +503,10 @@ describe('GET /api/otp/history — DEVELOPER routing-süzülü feed', () => {
     await prisma.oTPLog.update({
       where: { id: otpLog.id },
       data: { createdAt: new Date('2020-01-01T00:00:00.000Z') },
+    });
+    await prisma.routingRule.updateMany({
+      where: { developerId: developer.id },
+      data: { createdAt: new Date('2019-01-01T00:00:00.000Z') },
     });
 
     const res = await request(app)
@@ -534,6 +540,154 @@ describe('GET /api/otp/history — DEVELOPER routing-süzülü feed', () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
     expect(res.body.data[0].code).toBe('111111');
+  });
+
+  it('link zamanı — sonradan bağlanan developer link ÖNCESİ kodları görmez', async () => {
+    const project = await createTestProject();
+    const { user: receiver } = await createTestUser({
+      projectId: project.id,
+      role: Role.RECEIVER,
+    });
+    const { user: developer } = await createTestUser({
+      projectId: project.id,
+      role: Role.DEVELOPER,
+    });
+    // Önce kodlar gelir, kural SONRA kurulur → eski kodlar bu developer'a kapalı.
+    await createTestOtpLog({
+      projectId: project.id,
+      receiverId: receiver.id,
+      code: '111111',
+    });
+    await createTestOtpLog({
+      projectId: project.id,
+      receiverId: receiver.id,
+      code: '222222',
+    });
+    await createTestRoutingRule({
+      receiverId: receiver.id,
+      targetType: RoutingTarget.DEVELOPER,
+      developerId: developer.id,
+    });
+    await createTestOtpLog({
+      projectId: project.id,
+      receiverId: receiver.id,
+      code: '333333',
+    });
+
+    const token = tokenService.generateAccessToken({
+      sub: developer.id,
+      email: developer.email,
+      role: developer.role,
+      projectId: developer.projectId,
+    });
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].code).toBe('333333');
+  });
+
+  it('link zamanı (grup) — gruba SONRADAN eklenen üye, üyelik öncesi kodları görmez', async () => {
+    const project = await createTestProject();
+    const { user: receiver } = await createTestUser({
+      projectId: project.id,
+      role: Role.RECEIVER,
+    });
+    const { user: developer } = await createTestUser({
+      projectId: project.id,
+      role: Role.DEVELOPER,
+    });
+    const group = await createTestGroup({ projectId: project.id });
+    // Kural + eski kod, developer henüz grupta DEĞİLKEN oluşur.
+    await createTestRoutingRule({
+      receiverId: receiver.id,
+      targetType: RoutingTarget.GROUP,
+      groupId: group.id,
+    });
+    await createTestOtpLog({
+      projectId: project.id,
+      receiverId: receiver.id,
+      code: '111111',
+    });
+    // Developer gruba şimdi eklenir → görünürlük bu andan itibaren başlar.
+    await prisma.groupMember.create({
+      data: { groupId: group.id, userId: developer.id },
+    });
+    await createTestOtpLog({
+      projectId: project.id,
+      receiverId: receiver.id,
+      code: '444444',
+    });
+
+    const token = tokenService.generateAccessToken({
+      sub: developer.id,
+      email: developer.email,
+      role: developer.role,
+      projectId: developer.projectId,
+    });
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].code).toBe('444444');
+  });
+
+  it('link zamanı — aynı receiver\'a birden çok link: EN ERKEN kazanır', async () => {
+    const project = await createTestProject();
+    const { user: receiver } = await createTestUser({
+      projectId: project.id,
+      role: Role.RECEIVER,
+    });
+    const { user: developer } = await createTestUser({
+      projectId: project.id,
+      role: Role.DEVELOPER,
+    });
+    // Doğrudan kural DÜNDEN beri var; grup linki bugün kurulacak.
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await createTestRoutingRule({
+      receiverId: receiver.id,
+      targetType: RoutingTarget.DEVELOPER,
+      developerId: developer.id,
+      createdAt: yesterday,
+    });
+    // Dün ile bugün arasında gelen kod: yalnızca erken (doğrudan) link kapsar.
+    const { otpLog } = await createTestOtpLog({
+      projectId: project.id,
+      receiverId: receiver.id,
+      code: '555555',
+    });
+    await prisma.oTPLog.update({
+      where: { id: otpLog.id },
+      data: { createdAt: new Date(Date.now() - 12 * 60 * 60 * 1000) },
+    });
+    const group = await createTestGroup({ projectId: project.id });
+    await createTestRoutingRule({
+      receiverId: receiver.id,
+      targetType: RoutingTarget.GROUP,
+      groupId: group.id,
+    });
+    await prisma.groupMember.create({
+      data: { groupId: group.id, userId: developer.id },
+    });
+
+    const token = tokenService.generateAccessToken({
+      sub: developer.id,
+      email: developer.email,
+      role: developer.role,
+      projectId: developer.projectId,
+    });
+    const res = await request(app)
+      .get('/api/otp/history')
+      .set('Authorization', `Bearer ${token}`);
+
+    // Geç (grup) linki erken (doğrudan) linkin penceresini DARALTMAMALI.
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].code).toBe('555555');
   });
 });
 

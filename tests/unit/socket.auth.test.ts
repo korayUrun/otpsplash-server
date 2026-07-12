@@ -142,12 +142,18 @@ describe('handleConnection', () => {
     );
   });
 
-  it('ADMIN → hiçbir odaya katılmaz (OTP feed\'i yok)', () => {
+  it('ADMIN → proje odasına katılır (Özet ekranı canlı güncellenir)', () => {
     const { socket, join } = fakeConnSocket({
       ...samplePayload,
       role: Role.ADMIN,
     });
     handleConnection(socket);
-    expect(join).not.toHaveBeenCalled();
+    expect(join).toHaveBeenCalledWith(
+      CONSTANTS.SOCKET.projectRoom(samplePayload.projectId),
+    );
+    // Kullanıcı odasına AYRICA katılmaz — tek oda stratejisi (çift emit yok).
+    expect(join).not.toHaveBeenCalledWith(
+      CONSTANTS.SOCKET.userRoom(samplePayload.sub),
+    );
   });
 });
