@@ -169,6 +169,8 @@ interface CreateRoutingRuleOptions {
   developerId?: string;
   groupId?: string;
   isActive?: boolean;
+  /** Link-zamanı testleri için kuralın oluşturulma anını geçmişe çekme imkânı. */
+  createdAt?: Date;
 }
 
 /** Test yönlendirme kuralı oluşturur (DB seviyesi — servis katmanını bypass eder). */
@@ -182,6 +184,7 @@ export async function createTestRoutingRule(
       developerId: opts.developerId ?? null,
       groupId: opts.groupId ?? null,
       isActive: opts.isActive ?? true,
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
     },
   });
 }

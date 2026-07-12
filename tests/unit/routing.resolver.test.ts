@@ -14,7 +14,7 @@ import type {
 /**
  * RoutingResolver birim testi — repository mock'lanır (DIP).
  * Flatten + dedupe izole doğrulanır. AKTİF filtresi ve receiver bazlı süzme DB seviyesindedir
- * (findActiveTargets / findReceiverIdsForDeveloper sözleşmesi) ve routing integration testinde doğrulanır.
+ * (findActiveTargets / findDeveloperLinks sözleşmesi) ve routing integration testinde doğrulanır.
  */
 
 const RECEIVER_ID = '11111111-1111-1111-1111-111111111111';
@@ -83,7 +83,7 @@ function buildRepo(): jest.Mocked<IRoutingRepository> {
     findDeveloperRule: jest.fn(),
     findGroupRule: jest.fn(),
     findActiveTargets: jest.fn(),
-    findReceiverIdsForDeveloper: jest.fn(),
+    findDeveloperLinks: jest.fn(),
     toggle: jest.fn(),
     delete: jest.fn(),
     findUserById: jest.fn(),
@@ -170,22 +170,58 @@ describe('RoutingResolver.resolveTargetDetails', () => {
   });
 });
 
-describe('RoutingResolver.resolveVisibleReceiverIds', () => {
-  it('developer id\'siyle repository\'yi sorgular, receiver id listesini döner', async () => {
+describe('RoutingResolver.resolveVisibleReceivers', () => {
+  const T1 = new Date('2026-07-01T10:00:00.000Z');
+  const T2 = new Date('2026-07-05T10:00:00.000Z');
+  const T3 = new Date('2026-07-08T10:00:00.000Z');
+
+  it('developer id\'siyle repository\'yi sorgular, receiver + linkedAt döner', async () => {
     const repo = buildRepo();
-    repo.findReceiverIdsForDeveloper.mockResolvedValue([RECEIVER_ID, RECEIVER_B]);
+    repo.findDeveloperLinks.mockResolvedValue([
+      { receiverId: RECEIVER_ID, ruleCreatedAt: T1, memberCreatedAt: null },
+      { receiverId: RECEIVER_B, ruleCreatedAt: T2, memberCreatedAt: null },
+    ]);
 
-    const result = await new RoutingResolver(repo).resolveVisibleReceiverIds(DEV_A);
+    const result = await new RoutingResolver(repo).resolveVisibleReceivers(DEV_A);
 
-    expect(repo.findReceiverIdsForDeveloper).toHaveBeenCalledWith(DEV_A);
-    expect(result).toEqual([RECEIVER_ID, RECEIVER_B]);
+    expect(repo.findDeveloperLinks).toHaveBeenCalledWith(DEV_A);
+    expect(result).toEqual([
+      { receiverId: RECEIVER_ID, linkedAt: T1 },
+      { receiverId: RECEIVER_B, linkedAt: T2 },
+    ]);
+  });
+
+  it('GROUP kuralı: linkedAt = max(kural, üyelik) — görünürlük ikisi de varken başlar', async () => {
+    const repo = buildRepo();
+    // Kural eski, developer gruba SONRADAN eklendi → üyelik anı kazanır.
+    repo.findDeveloperLinks.mockResolvedValue([
+      { receiverId: RECEIVER_ID, ruleCreatedAt: T1, memberCreatedAt: T2 },
+    ]);
+
+    const result = await new RoutingResolver(repo).resolveVisibleReceivers(DEV_A);
+
+    expect(result).toEqual([{ receiverId: RECEIVER_ID, linkedAt: T2 }]);
+  });
+
+  it('aynı receiver\'a birden çok link → EN ERKEN etkin zaman kazanır', async () => {
+    const repo = buildRepo();
+    repo.findDeveloperLinks.mockResolvedValue([
+      // Grup linki: etkin = max(T1, T3) = T3.
+      { receiverId: RECEIVER_ID, ruleCreatedAt: T1, memberCreatedAt: T3 },
+      // Doğrudan link: etkin = T2 — daha erken, bu kazanmalı.
+      { receiverId: RECEIVER_ID, ruleCreatedAt: T2, memberCreatedAt: null },
+    ]);
+
+    const result = await new RoutingResolver(repo).resolveVisibleReceivers(DEV_A);
+
+    expect(result).toEqual([{ receiverId: RECEIVER_ID, linkedAt: T2 }]);
   });
 
   it('hiç kural yok → boş liste (developer hiçbir kod görmez)', async () => {
     const repo = buildRepo();
-    repo.findReceiverIdsForDeveloper.mockResolvedValue([]);
+    repo.findDeveloperLinks.mockResolvedValue([]);
 
-    const result = await new RoutingResolver(repo).resolveVisibleReceiverIds(DEV_A);
+    const result = await new RoutingResolver(repo).resolveVisibleReceivers(DEV_A);
 
     expect(result).toEqual([]);
   });

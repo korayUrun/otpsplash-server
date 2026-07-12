@@ -137,12 +137,16 @@ export function authenticateSocket(
  * Doğrulanmış bağlantı için oda yönetimi.
  * DEVELOPER → `user:${userId}` odasına katılır (FAZ 7 hedefli dağıtım, routing hedefi).
  * RECEIVER → aynı `user:${userId}` odasına katılır ki kendi cihazının ürettiği OTP'yi
- * geçmişinde anında görsün (kendi odasına gelen `otp:received`). ADMIN hiçbir odaya katılmaz.
+ * geçmişinde anında görsün (kendi odasına gelen `otp:received`).
+ * ADMIN → `project:${projectId}` odasına katılır — Özet ekranı projedeki HER yeni OTP'yi
+ * refresh'siz görür (`otp:received` proje odasına da yayınlanır; `otp:revoked` YAYINLANMAZ,
+ * admin özeti paylaşım durumundan bağımsız her kaydı gösterir).
  *
- * Tek oda stratejisi: her kullanıcı SADECE kendi `user:` odasına katılır, `project:` odasına
- * AYRICA katılmaz — böylece aynı event'i iki kez alma riski doğmaz (CLAUDE.md "Sharing Durdurma").
- * Developer ve receiver odaları ayrık hedeflenir: routing çıktısı (developer) `notify`, sahibi
- * receiver ise `notifyReceiver` ile — bir kullanıcı tek rol taşıdığından çakışma olmaz.
+ * Tek oda stratejisi: her kullanıcı rolüne göre TEK odaya katılır — developer/receiver kendi
+ * `user:` odasına, admin proje odasına. Developer/receiver proje odasına katılMADIĞI için aynı
+ * event'i iki kez alma riski yoktur (CLAUDE.md "Sharing Durdurma"). Developer ve receiver
+ * odaları ayrık hedeflenir: routing çıktısı (developer) `notify`, sahibi receiver ise
+ * `notifyReceiver` ile — bir kullanıcı tek rol taşıdığından çakışma olmaz.
  *
  * @remarks export edilir (birim testi).
  */
@@ -155,6 +159,13 @@ export function handleConnection(socket: AppSocket): void {
     logger.info(
       { socketId: socket.id, userId: user.sub, role: user.role, room },
       'socket bağlandı ve kullanıcı odasına katıldı',
+    );
+  } else if (user.role === Role.ADMIN) {
+    const room = CONSTANTS.SOCKET.projectRoom(user.projectId);
+    void socket.join(room);
+    logger.info(
+      { socketId: socket.id, userId: user.sub, role: user.role, room },
+      'socket bağlandı ve proje odasına katıldı (admin canlı özet)',
     );
   } else {
     logger.info(
@@ -235,6 +246,21 @@ function emitToReceiver(receiverId: string, payload: OtpNotification): void {
 }
 
 /**
+ * OTP'yi projenin admin odasına yayınlar (`otp:received`, aynı payload). Admin Özet
+ * ekranının canlı karşılığıdır — `deliveredTo` sayımına DAHİL DEĞİLDİR ve routing'den
+ * bağımsız her OTP için çağrılır (admin özeti zaten filtresizdir).
+ */
+function emitToProject(projectId: string, payload: OtpNotification): void {
+  if (!ioRef) {
+    logger.warn('socket başlatılmadı — proje (admin) emit atlandı');
+    return;
+  }
+  ioRef
+    .to(CONSTANTS.SOCKET.projectRoom(projectId))
+    .emit(CONSTANTS.SOCKET.EVENT_OTP, payload);
+}
+
+/**
  * Paylaşımı durdurulan OTP için `otp:revoked` event'ini hedef developer'lara yayınlar.
  * SADECE `user:` odalarına gider (`otp:received` ile aynı hedefleme) — çift emit önlenir.
  * Event yalnızca UI senkronizasyonu içindir; developer'ın kodu daha önce görmüş olmasını geri almaz.
@@ -259,5 +285,6 @@ function emitRevoked(otpId: string, targetUserIds: string[]): void {
 export const socketNotifier: IOtpNotifier = {
   notify: (targetUserIds, payload) => emitOtp(targetUserIds, payload),
   notifyReceiver: (receiverId, payload) => emitToReceiver(receiverId, payload),
+  notifyAdmins: (projectId, payload) => emitToProject(projectId, payload),
   notifyRevoked: (otpId, targetUserIds) => emitRevoked(otpId, targetUserIds),
 };

@@ -4,6 +4,7 @@ import type {
   IRoutingResolver,
   RoutingRuleWithTargets,
   TargetUser,
+  VisibleReceiver,
 } from './routing.interfaces';
 
 /**
@@ -37,9 +38,31 @@ export class RoutingResolver implements IRoutingResolver {
     }));
   }
 
-  async resolveVisibleReceiverIds(developerId: string): Promise<string[]> {
-    // Repository DB seviyesinde `distinct` uygular — tekilleştirme gerekmez.
-    return this.repository.findReceiverIdsForDeveloper(developerId);
+  async resolveVisibleReceivers(
+    developerId: string,
+  ): Promise<VisibleReceiver[]> {
+    // Tek DB çağrısı (ASYNC), gerisi bellekte SYNC: her link'in ETKİN başlangıcı
+    // hesaplanır ve receiver başına en erken olan tutulur.
+    const links = await this.repository.findDeveloperLinks(developerId);
+
+    const earliestByReceiver = new Map<string, Date>();
+    for (const link of links) {
+      // GROUP kuralında görünürlük, kural VE üyelik birlikte var olduğunda başlar
+      // → geç olan (max) kazanır. DEVELOPER kuralında memberCreatedAt null'dur.
+      const effective =
+        link.memberCreatedAt && link.memberCreatedAt > link.ruleCreatedAt
+          ? link.memberCreatedAt
+          : link.ruleCreatedAt;
+      const current = earliestByReceiver.get(link.receiverId);
+      if (!current || effective < current) {
+        earliestByReceiver.set(link.receiverId, effective);
+      }
+    }
+
+    return [...earliestByReceiver].map(([receiverId, linkedAt]) => ({
+      receiverId,
+      linkedAt,
+    }));
   }
 
   /** Aktif kuralları benzersiz hedef developer id listesine indirger (SYNC). */

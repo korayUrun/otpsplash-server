@@ -112,12 +112,13 @@ function buildMocks(): Mocks {
     notifier: {
       notify: jest.fn(),
       notifyReceiver: jest.fn(),
+      notifyAdmins: jest.fn(),
       notifyRevoked: jest.fn(),
     },
     routing: {
       resolveTargets: jest.fn(),
       resolveTargetDetails: jest.fn(),
-      resolveVisibleReceiverIds: jest.fn(),
+      resolveVisibleReceivers: jest.fn(),
     },
     logger: {
       fatal: jest.fn(),
@@ -178,6 +179,8 @@ describe('OtpService.processAndDeliver', () => {
     expect(notifyArg.sharingActive).toBe(true);
     // Sahibi receiver kendi odasına AYNI payload'ı alır (deliveredTo'ya sayılmaz).
     expect(m.notifier.notifyReceiver).toHaveBeenCalledWith(RECEIVER_ID, notifyArg);
+    // Proje admin odası da AYNI payload'ı alır — admin Özet canlı güncellenir.
+    expect(m.notifier.notifyAdmins).toHaveBeenCalledWith(PROJECT_ID, notifyArg);
   });
 
   it('opsiyonel context DTO → save → emit payload zincirinde taşınır', async () => {
@@ -209,8 +212,9 @@ describe('OtpService.processAndDeliver', () => {
       expect(result.data.deliveredTo).toBe(0);
     }
     expect(m.repository.save).toHaveBeenCalled();
-    // Kural olmasa da sahibi receiver kendi kodunu görür.
+    // Kural olmasa da sahibi receiver kendi kodunu ve admin özeti yeni kaydı görür.
     expect(m.notifier.notifyReceiver).toHaveBeenCalled();
+    expect(m.notifier.notifyAdmins).toHaveBeenCalled();
   });
 
   it('cihaz silinmişse (device null) → payload.device null olur', async () => {
@@ -345,7 +349,9 @@ describe('OtpService.getSharingTargets', () => {
 describe('OtpService.getHistory', () => {
   const options: PaginationOptions = { page: 1, limit: 20 };
 
-  it('developer kapsamını (receiverId listesi) çözer, findForDeveloper\'a iletir, kayıtları döner', async () => {
+  const LINKED_AT = new Date('2026-07-01T00:00:00.000Z');
+
+  it('developer kapsamını (receiver + linkedAt) çözer, findForDeveloper\'a iletir, kayıtları döner', async () => {
     const m = buildMocks();
     const page: PaginatedResult<OtpLogWithRelations> = {
       items: [
@@ -353,7 +359,9 @@ describe('OtpService.getHistory', () => {
       ],
       pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
     };
-    m.routing.resolveVisibleReceiverIds.mockResolvedValue([RECEIVER_ID]);
+    m.routing.resolveVisibleReceivers.mockResolvedValue([
+      { receiverId: RECEIVER_ID, linkedAt: LINKED_AT },
+    ]);
     m.repository.findForDeveloper.mockResolvedValue(page);
     m.encryptor.decrypt.mockReturnValue('123456');
 
@@ -376,12 +384,13 @@ describe('OtpService.getHistory', () => {
       expect(result.data.items[0]?.device).toEqual({ name: 'İş Telefonum' });
       expect(result.data.pagination.total).toBe(1);
     }
-    // Kapsam developer'ın id'siyle çözülür, sorgu developerId (dismiss filtresi) + receiver listesiyle koşar.
-    expect(m.routing.resolveVisibleReceiverIds).toHaveBeenCalledWith(DEV_A);
+    // Kapsam developer'ın id'siyle çözülür; sorgu developerId (dismiss filtresi) +
+    // receiver başına link zamanıyla koşar (link öncesi kodlar süzülür).
+    expect(m.routing.resolveVisibleReceivers).toHaveBeenCalledWith(DEV_A);
     expect(m.repository.findForDeveloper).toHaveBeenCalledWith(
       PROJECT_ID,
       DEV_A,
-      [RECEIVER_ID],
+      [{ receiverId: RECEIVER_ID, linkedAt: LINKED_AT }],
       options,
     );
     expect(m.encryptor.decrypt).toHaveBeenCalledWith('enc-1');
@@ -389,7 +398,7 @@ describe('OtpService.getHistory', () => {
 
   it('kapsam boş (developer\'a kural yok) → DB\'ye gitmeden boş sayfa', async () => {
     const m = buildMocks();
-    m.routing.resolveVisibleReceiverIds.mockResolvedValue([]);
+    m.routing.resolveVisibleReceivers.mockResolvedValue([]);
 
     const result = await buildService(m).getHistory({
       developerId: DEV_A,
@@ -409,7 +418,9 @@ describe('OtpService.getHistory', () => {
 
   it('beklenmeyen DB hatası → yeniden fırlatılır', async () => {
     const m = buildMocks();
-    m.routing.resolveVisibleReceiverIds.mockResolvedValue([RECEIVER_ID]);
+    m.routing.resolveVisibleReceivers.mockResolvedValue([
+      { receiverId: RECEIVER_ID, linkedAt: LINKED_AT },
+    ]);
     m.repository.findForDeveloper.mockRejectedValue(new Error('DB down'));
 
     await expect(
@@ -444,7 +455,7 @@ describe('OtpService.getAllForProject (admin özeti)', () => {
       expect(result.data.items[0]?.receiver.email).toBe('receiver@test.com');
     }
     // Admin özeti routing'e bakmaz — doğrudan projeyi çeker.
-    expect(m.routing.resolveVisibleReceiverIds).not.toHaveBeenCalled();
+    expect(m.routing.resolveVisibleReceivers).not.toHaveBeenCalled();
     expect(m.repository.findAllForProject).toHaveBeenCalledWith(PROJECT_ID, options);
   });
 });

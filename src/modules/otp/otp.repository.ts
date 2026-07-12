@@ -5,6 +5,7 @@ import type {
   IOtpRepository,
   OtpLogWithRelations,
 } from './otp.interfaces';
+import type { VisibleReceiver } from '@modules/routing/routing.interfaces';
 
 /** save/history sorgularının paylaştığı include seti (receiver kimliği + cihaz adı). */
 const WITH_RELATIONS = { receiver: true, device: true } as const;
@@ -27,19 +28,25 @@ export class PrismaOtpRepository implements IOtpRepository {
   /**
    * Bir developer'a aktif kuralla yönlendirilen kayıtları sayfalı döner (en yeni önce).
    * Görünürlük filtreleri: `sharingActive` açık + bu developer'ın KENDİ feed'inden kaldırMADIĞı
-   * (dismissal yok) + yalnızca verilen receiver'lara ait kayıtlar. OTP süresiz — expiry filtresi yok.
+   * (dismissal yok) + receiver başına yalnızca LINK'ten SONRAKİ kayıtlar
+   * (`createdAt >= linkedAt` — sonradan bağlanan developer geçmiş kodları göremez).
+   * OTP süresiz — expiry filtresi yok. `linkedAt` ve `OTPLog.createdAt` aynı DB
+   * saatinin `now()` değerleridir; karşılaştırma saat kaymasından etkilenmez.
    */
   async findForDeveloper(
     projectId: string,
     developerId: string,
-    receiverIds: string[],
+    receivers: VisibleReceiver[],
     options: PaginationOptions,
   ): Promise<PaginatedResult<OtpLogWithRelations>> {
     const where: Prisma.OTPLogWhereInput = {
       projectId,
       sharingActive: true,
-      receiverId: { in: receiverIds },
       dismissals: { none: { userId: developerId } },
+      OR: receivers.map((receiver) => ({
+        receiverId: receiver.receiverId,
+        createdAt: { gte: receiver.linkedAt },
+      })),
     };
     return this.paginate(where, options);
   }

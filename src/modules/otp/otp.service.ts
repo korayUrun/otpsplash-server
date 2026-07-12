@@ -86,6 +86,9 @@ export class OtpService implements IOtpService {
       // 4b) Sahibi receiver'ın kendi odasına da yayınla (routing'den bağımsız, deliveredTo'yu
       //     etkilemez) — receiver kendi geçmişinde yeni kodu anında, refresh'siz görür.
       this.notifier.notifyReceiver(dto.receiverId, payload);
+      // 4c) Projenin admin odasına da yayınla — admin Özet ekranı canlı güncellenir
+      //     (deliveredTo'yu etkilemez; admin özeti routing'den bağımsız ve filtresizdir).
+      this.notifier.notifyAdmins(dto.projectId, payload);
 
       this.logger.info(
         {
@@ -108,19 +111,20 @@ export class OtpService implements IOtpService {
   ): Promise<Result<PaginatedResult<OtpHistoryItem>>> {
     try {
       // Canlı emit'le aynı routing çözümü: developer yalnızca kendisine (doğrudan) veya
-      // üye olduğu gruba yönlendirilen aktif kuralların kapsadığı receiver'ların kodlarını görür.
-      // Kural yoksa → boş kapsam → DB'ye gitmeden boş feed (canlı feed ile hizalı).
-      const receiverIds = await this.routingResolver.resolveVisibleReceiverIds(
+      // üye olduğu gruba yönlendirilen aktif kuralların kapsadığı receiver'ların kodlarını görür
+      // — ve her receiver için yalnızca LINK'ten (`linkedAt`) sonra gelen kodları (sonradan
+      // bağlanan developer geçmişi göremez). Kural yoksa → boş kapsam → DB'ye gitmeden boş feed.
+      const receivers = await this.routingResolver.resolveVisibleReceivers(
         dto.developerId,
       );
-      if (receiverIds.length === 0) {
+      if (receivers.length === 0) {
         return ok(this.emptyPage(dto.page, dto.limit));
       }
 
       const page = await this.repository.findForDeveloper(
         dto.projectId,
         dto.developerId,
-        receiverIds,
+        receivers,
         { page: dto.page, limit: dto.limit },
       );
 
